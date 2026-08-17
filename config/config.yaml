@@ -1,0 +1,110 @@
+base_path: "."  # Root path prepended to all data/model paths. Change to an absolute path (e.g. "/mnt/data/project") to relocate the whole project.
+
+data:
+  raw: "data/raw"
+  intermediate: "data/intermediate" 
+  processed: "data/processed"
+  features: "data/raw/clothes_features"
+  min_session_length: 6 # Minimum session length to keep in the dataset after filtering low frequency items. Note: This is different from the context_length used in the model configuration which is the context length for the model.
+  items_frequency: 5
+  feature_store_dir: "data/train" # Directory for feature store
+  train_feature_store: "train.parquet" # File name for the feature store
+  test_feature_store: "test.parquet" # File name for the feature store
+  sample: "data/sampled" # Path to the sampled data
+  subset: "train" # Specify subset folder to be loaded. Allowed options are 'train' or 'test'. TODO: Change to 'test' for test set up
+  tokenizer_path: "data/tokenizer.json" #"data/custom_tokenizer.json"
+  tokenizer_build_path: "data/train/train.parquet" # Path to data for building tokenizer
+  submission_dir: "data/submission" # Dir to save submission files
+  train: "data/train" # Directory for training data
+  test: "data/test" # Directory for test data
+  item_meta_embedding: "data/processed/item_meta_embeddings.pt"
+  item_meta_id_map: "data/processed/item_id_to_index.json"
+  
+
+# Model configuration
+
+# model:
+#   items_size: 19410     # Vocabulary size
+#   context_length: 5      # Context length
+#   emb_dim: 64            # Embedding dimension
+#   n_heads: 1              # Number of attention heads
+#   n_layers: 1             # Number of layers
+#   drop_rate: 0.3001          # Dropout rate
+#   qkv_bias: False         # Query-Key-Value bias
+#   name: "dressiformer"   # Model name
+#   folder: "models"        # Model folder
+#   model_type: "gpt"       # Model type
+#   cutoffs: [100, 1000, 9000] # Cutoffs for Adaptive Softmax (must all be < items_size)
+#   div_value: 4            # Div value for Adaptive Softmax
+#   use_meta_embeddings: true   # Add pretrained item metadata embeddings to token embeddings
+#   freeze_meta_embeddings: true # Keep metadata embeddings fixed during Transformer training
+
+model:
+  items_size: 19410     # Vocabulary size
+  context_length: 5      # Context length
+  emb_dim: 64            # Embedding dimension
+  hidden_dim: 128         # Hidden dimension for LSTM
+  n_heads: 1              # Number of attention heads
+  n_layers: 1             # Number of layers
+  drop_rate: 0.25          # Dropout rate
+  qkv_bias: false         # Query-Key-Value bias
+  name: "dressipi-lara"   # Model name LSTM Attention Recommender Architecture
+  folder: "models"        # Model folder
+  model_type: "lstm"       # Model type
+  cutoffs: [100, 1000, 9000] # Cutoffs for Adaptive Softmax (must all be < items_size)
+  div_value: 4            # Div value for Adaptive Softmax
+  use_meta_embeddings: false   # Add pretrained item metadata embeddings to token embeddings
+  freeze_meta_embeddings: true # Keep metadata embeddings fixed during Transformer training
+
+
+# Hyperparameters
+hyperparameters:
+  batch_size: 128
+  learning_rate: 0.0005
+  num_epochs: 5
+  warmup_steps: 100
+  weight_decay: 0.201
+  num_accumulation_steps: 1
+  max_grad_norm: 1.0
+  label_smoothing: 0.2 # Label smoothing value
+  evaluation_frequency: 500
+  evaluation_num_batches: 10
+  validation_ratio: 0.2
+  device: "mps" # Options: 'cuda', 'mps' or 'cpu'
+  num_workers: 0 # Number of workers for DataLoader
+  use_adaptive_softmax: False # Whether to use Adaptive Softmax
+  optimizer: "AdamW" # Optimizer type ["SGD", "AdamW"]
+  optimizer_params:
+    lr: 0.0005
+    betas: [0.9, 0.999]
+    weight_decay: 0.22
+  seed: 42
+
+# experiment:
+#   wandb_api_key: "aea5658d770a1833d2432b53c4fecf87e2295ec1" # WandB API Key
+#   entity: "glissa" # "<entity>"
+#   project: "Dressiformer" # "<project>"
+#   run_id: "exp_27" # "<run ID>"
+#   resume: "allow" # Options: 'must', 'allow' or 'never' source: https://docs.wandb.ai/models/runs/resuming
+#   notes: "Same configuration as previous experiment 17. This time training dataset and test dataset were build by merging original train test datasets and then splitting to avoid unknown items from original test set." # Notes for the experiment
+
+
+experiment:
+  wandb_api_key: "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" # WandB API Key
+  entity: "glissa" # "<entity>"
+  project: "LARA" # "<project>"
+  run_id: "test09" # "<run ID>"
+  group: "k-fold-experiment"
+  resume: "allow" # Options: 'must', 'allow' or 'never' source: https://docs.wandb.ai/models/runs/resuming
+  notes: "First experiment with LARA model" # Notes for the experiment
+
+
+
+# experiment:
+#   wandb_api_key: "api-key-goes-here" # WandB API Key
+#   entity: "<entity>" 
+#   project: "<project>"
+#   run_id: "exp-01" # "<run ID>"
+#   resume: "allow" # Options: 'must', 'allow' or 'never' source: https://docs.wandb.ai/models/runs/resuming
+#   notes: "Notes for the experiment"
+
