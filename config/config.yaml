@@ -80,31 +80,12 @@ hyperparameters:
     weight_decay: 0.22
   seed: 42
 
-# experiment:
-#   wandb_api_key: "aea5658d770a1833d2432b53c4fecf87e2295ec1" # WandB API Key
-#   entity: "glissa" # "<entity>"
-#   project: "Dressiformer" # "<project>"
-#   run_id: "exp_27" # "<run ID>"
-#   resume: "allow" # Options: 'must', 'allow' or 'never' source: https://docs.wandb.ai/models/runs/resuming
-#   notes: "Same configuration as previous experiment 17. This time training dataset and test dataset were build by merging original train test datasets and then splitting to avoid unknown items from original test set." # Notes for the experiment
-
 
 experiment:
-  wandb_api_key: "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" # WandB API Key
-  entity: "glissa" # "<entity>"
-  project: "LARA" # "<project>"
-  run_id: "test09" # "<run ID>"
-  group: "k-fold-experiment"
+  wandb_api_key: "api-key-goes-here" # WandB API Key
+  entity: "<entity>" 
+  project: "<project>"
+  run_id: "exp-01" # "<run ID>"
   resume: "allow" # Options: 'must', 'allow' or 'never' source: https://docs.wandb.ai/models/runs/resuming
-  notes: "First experiment with LARA model" # Notes for the experiment
-
-
-
-# experiment:
-#   wandb_api_key: "api-key-goes-here" # WandB API Key
-#   entity: "<entity>" 
-#   project: "<project>"
-#   run_id: "exp-01" # "<run ID>"
-#   resume: "allow" # Options: 'must', 'allow' or 'never' source: https://docs.wandb.ai/models/runs/resuming
-#   notes: "Notes for the experiment"
+  notes: "Notes for the experiment"
 
