@@ -21,23 +21,7 @@ import wandb
 warnings.filterwarnings("ignore")  # To ignore user warnings
 from sklearn.model_selection import KFold
 
-# Setup hyperparameters
-#NUM_WORKERS = os.cpu_count()
-#print("NUM_WORKERS: ", NUM_WORKERS)
 
-
-
-
-
-
-
-# # Create DataLoaders with help from data_setup.py
-# train_dataloader, val_dataloader, _ = create_dataloaders(
-#     file_path=Path(cfg_data["feature_store_dir"], "train", cfg_data["feature_store_name"].rsplit('.', 1)[0] + ".parquet"),
-#     tokenizer_path=cfg_data["tokenizer_path"],
-#     seq_len=cfg_model["context_length"],
-#     batch_size=cfg_hyperparam["batch_size"]
-# )
 
 def load_data(file_path: str,  tokenizer: Tokenizer):
     
@@ -242,12 +226,12 @@ if __name__ == "__main__":
         optimizer = None
         if cfg_hyperparam["optimizer"] == "AdamW":
             optimizer = torch.optim.AdamW(model.parameters(), 
-                                        lr=cfg_hyperparam["optimizer_params"]["lr"], 
-                                        weight_decay=cfg_hyperparam["optimizer_params"]["weight_decay"])
+                                        lr=cfg_hyperparam["learning_rate"], 
+                                        weight_decay=cfg_hyperparam["weight_decay"])
         elif cfg_hyperparam["optimizer"] == "SGD":
             optimizer = torch.optim.SGD(model.parameters(), 
-                                        lr=cfg_hyperparam["optimizer_params"]["lr"], 
-                                        weight_decay=cfg_hyperparam["optimizer_params"]["weight_decay"])
+                                        lr=cfg_hyperparam["learning_rate"], 
+                                        weight_decay=cfg_hyperparam["weight_decay"])
         else:
             raise ValueError(f"Unsupported optimizer: {cfg_hyperparam['optimizer']}")
     
@@ -272,13 +256,16 @@ if __name__ == "__main__":
     
         config["model_name"] = model_filename 
 
-        config["k_folds"] = k_folds
+        config["fold"] = fold
+
+        run_name = f"fold-{fold}"
 
         run = wandb.init(entity=cfg_experiment["entity"], project=cfg_experiment["project"]
-                         ,id=cfg_experiment["run_id"]
+                         #,id=cfg_experiment["run_id"]
                          ,resume=cfg_experiment["resume"]
-                         ,group=cfg_experiment["group"]
-                         ,name= f"kfold-{fold}"
+                         ,group=cfg_experiment["group"] + wandb.util.generate_id()
+                         , name=run_name
+                         ,job_type=run_name
                          ,reinit=True, config=config)
 
 
