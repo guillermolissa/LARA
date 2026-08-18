@@ -18,6 +18,7 @@ from tokenizer import get_tokenizer
 from tokenizers import Tokenizer
 import torch.multiprocessing as mp
 import wandb
+import metrics
 warnings.filterwarnings("ignore")  # To ignore user warnings
 from sklearn.model_selection import KFold
 
@@ -121,6 +122,58 @@ def validate_model(model: torch.nn.Module,
     model.train()
     return train_loss, val_loss
 
+
+def evaluate_ranking_metrics(model: torch.nn.Module,
+                             val_dataloader: torch.utils.data.DataLoader,
+                             tokenizer: Tokenizer,
+                             device: torch.device,
+                             k: int = 10) -> Dict[str, float]:
+    """Aggregates validation batch predictions and scores them with metrics.py,
+    mirroring the evaluation logic in evaluation.py."""
+    model.eval()
+    target_items_out, predicted_items_out = [], []
+
+    with torch.no_grad():
+        for input_batch, target_batch in val_dataloader:
+            input_batch = input_batch.to(device)
+            target_batch = target_batch.to(device)
+
+            logits, _, _ = model(input_batch)
+            top_ids = torch.topk(logits, k=k, dim=-1).indices  # (B, k)
+            last_targets = target_batch[:, -1]                 # (B,)
+
+            for i in range(input_batch.size(0)):
+                target_id = last_targets[i].item()
+                if target_id == -100:
+                    continue
+                predicted_items_out.append(
+                    [tokenizer.id_to_token(tid) for tid in top_ids[i].tolist()]
+                )
+                target_items_out.append([tokenizer.id_to_token(target_id)])
+
+    model.train()
+
+    metric_names = ["hr", "mrr", "precision", "recall", "map", "ndcg"]
+    if not target_items_out:
+        return {f"{name}_{k}": float("nan") for name in metric_names}
+
+    pairs = list(zip(target_items_out, predicted_items_out))
+    hr = np.mean([metrics.hit_rate_k(gt, pred, k=k) for gt, pred in pairs])
+    mrr = np.mean([metrics.rr_k(gt, pred, k=k) for gt, pred in pairs])
+    precision = np.mean([metrics.precision_k(gt, pred, k=k) for gt, pred in pairs])
+    recall = np.mean([metrics.recall_k(gt, pred, k=k) for gt, pred in pairs])
+    map_score = np.mean([metrics.apk(gt, pred, k=k) for gt, pred in pairs])
+    ndcg = np.mean([metrics.ndcg_k(gt, pred, k=k) for gt, pred in pairs])
+
+    return {
+        f"hr_{k}": hr,
+        f"mrr_{k}": mrr,
+        f"precision_{k}": precision,
+        f"recall_{k}": recall,
+        f"map_{k}": map_score,
+        f"ndcg_{k}": ndcg,
+    }
+
 if __name__ == "__main__":
 
     mp.set_start_method('spawn', force=True)
@@ -149,7 +202,7 @@ if __name__ == "__main__":
 
     # Set seed for the experiment
     set_seed(cfg_hyperparam["seed"])
-    k_folds = 5
+    k_folds = cfg_hyperparam["kfold"]
     
     
     # load dataset
@@ -270,6 +323,8 @@ if __name__ == "__main__":
 
 
             
+        print("RUN WANDB INFO\n")
+        print("ENTITY: ", cfg_experiment["entity"], " - RESUME: ", cfg_experiment["resume"] ," - GROUP: ", cfg_experiment["group"] + wandb.util.generate_id() )
 
         # Sample elements randomly from a given list of ids, no replacement.
         train_subsampler = torch.utils.data.SubsetRandomSampler(train_ids)
@@ -375,15 +430,27 @@ if __name__ == "__main__":
             val_losses.append(val_loss)
             losses.append(total_loss)
 
-                    #if run is not None:
-                    #    run.log({"train/train_loss": train_loss, "val/val_loss": val_loss})
+            val_ranking_metrics = evaluate_ranking_metrics(
+                model, val_dataloader, tokenizer, device, k=10,
+            )
 
-            
-            
-            run.log({"epoch": (epoch+1),"train/train_loss": train_loss, "val/val_loss": val_loss})
+            run.log({
+                "epoch": (epoch+1),
+                "train/train_loss": train_loss,
+                "val/loss": val_loss,
+                "val/hr_10": val_ranking_metrics["hr_10"],
+                "val/mrr_10": val_ranking_metrics["mrr_10"],
+                "val/precision_10": val_ranking_metrics["precision_10"],
+                "val/recall_10": val_ranking_metrics["recall_10"],
+                "val/map_10": val_ranking_metrics["map_10"],
+                "val/ndcg_10": val_ranking_metrics["ndcg_10"],
+            })
 
             print(f"Ep {epoch+1} (Step {global_step}): "
                 f"Train loss {train_loss:.3f}, Val loss {val_loss:.3f}, Total loss {total_loss:.3f}, "
+                f"Val HR@10 {val_ranking_metrics['hr_10']:.3f}, Val MRR@10 {val_ranking_metrics['mrr_10']:.3f}, "
+                f"Val Precision@10 {val_ranking_metrics['precision_10']:.3f}, Val Recall@10 {val_ranking_metrics['recall_10']:.3f}, "
+                f"Val MAP@10 {val_ranking_metrics['map_10']:.3f}, Val NDCG@10 {val_ranking_metrics['ndcg_10']:.3f}, "
                 f"LR {scheduler.get_last_lr()[0]:.2e}")
 
             early_stopping(val_loss, model)
