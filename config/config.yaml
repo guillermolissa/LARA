@@ -21,24 +21,6 @@ data:
   item_meta_id_map: "data/processed/item_id_to_index.json"
   
 
-# Model configuration
-
-# model:
-#   items_size: 19410     # Vocabulary size
-#   context_length: 5      # Context length
-#   emb_dim: 64            # Embedding dimension
-#   n_heads: 1              # Number of attention heads
-#   n_layers: 1             # Number of layers
-#   drop_rate: 0.3001          # Dropout rate
-#   qkv_bias: False         # Query-Key-Value bias
-#   name: "dressiformer"   # Model name
-#   folder: "models"        # Model folder
-#   model_type: "gpt"       # Model type
-#   cutoffs: [100, 1000, 9000] # Cutoffs for Adaptive Softmax (must all be < items_size)
-#   div_value: 4            # Div value for Adaptive Softmax
-#   use_meta_embeddings: true   # Add pretrained item metadata embeddings to token embeddings
-#   freeze_meta_embeddings: true # Keep metadata embeddings fixed during Transformer training
-
 model:
   items_size: 19410     # Vocabulary size
   context_length: 5      # Context length
@@ -62,6 +44,7 @@ hyperparameters:
   batch_size: 128
   learning_rate: 0.0005
   num_epochs: 5
+  kfold : 3
   warmup_steps: 100
   weight_decay: 0.201
   num_accumulation_steps: 1
@@ -74,10 +57,6 @@ hyperparameters:
   num_workers: 0 # Number of workers for DataLoader
   use_adaptive_softmax: False # Whether to use Adaptive Softmax
   optimizer: "AdamW" # Optimizer type ["SGD", "AdamW"]
-  optimizer_params:
-    lr: 0.0005
-    betas: [0.9, 0.999]
-    weight_decay: 0.22
   seed: 42
 
 
@@ -86,7 +65,7 @@ experiment:
   entity: "<entity>" 
   project: "<project>"
   run_id: "<run ID>"
-  group: "<kfold-group>"
+  group: "experiment-"
   resume: "allow" # Options: 'must', 'allow' or 'never' source: https://docs.wandb.ai/models/runs/resuming
   notes: "Notes for the experiment"
 
