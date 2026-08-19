@@ -248,7 +248,7 @@ if __name__ == "__main__":
     label_smoothing=cfg_hyperparam.get("label_smoothing", 0.1)
 
 
-
+    GROUP = cfg_experiment["group"] + wandb.util.generate_id()
 
     train_total_loss, val_total_loss = [], []
     # K-fold Cross Validation model evaluation
@@ -316,7 +316,7 @@ if __name__ == "__main__":
         run = wandb.init(entity=cfg_experiment["entity"], project=cfg_experiment["project"]
                          #,id=cfg_experiment["run_id"]
                          ,resume=cfg_experiment["resume"]
-                         ,group=cfg_experiment["group"] + wandb.util.generate_id()
+                         ,group=GROUP
                          , name=run_name
                          ,job_type=run_name
                          ,reinit=True, config=config)
@@ -324,7 +324,7 @@ if __name__ == "__main__":
 
             
         print("RUN WANDB INFO\n")
-        print("ENTITY: ", cfg_experiment["entity"], " - RESUME: ", cfg_experiment["resume"] ," - GROUP: ", cfg_experiment["group"] + wandb.util.generate_id() )
+        print("ENTITY: ", cfg_experiment["entity"], " - PROJECT: ", cfg_experiment["project"] ," - GROUP: ", GROUP)
 
         # Sample elements randomly from a given list of ids, no replacement.
         train_subsampler = torch.utils.data.SubsetRandomSampler(train_ids)
