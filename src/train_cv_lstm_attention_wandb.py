@@ -9,7 +9,7 @@ from typing import Dict, List, Tuple
 from lstm import LSTMAttentionModel
 from dataset import DressipiDataset
 from torch.utils.data import DataLoader , random_split
-from custom_collate import train_collate_fn
+from custom_collate import collate_fn
 from functools import partial
 #from data_setup import create_dataloaders
 from utils import set_seed, load_config, save_model, build_model_name, EarlyStopping
@@ -62,7 +62,7 @@ def calc_loss_batch(input_batch, target_batch, model, device,
         logits, _, _ = model(input_batch)
         # Only the last position is used at inference — train against the same target
         logits_last  = logits#[:, -1, :]       # (B, vocab_size)
-        targets_last = target_batch[:, -1]     # (B,)
+        targets_last = target_batch#[:, -1]     # (B,)
         loss = torch.nn.functional.cross_entropy(
             logits_last, targets_last,
             ignore_index=-100,
@@ -140,7 +140,7 @@ def evaluate_ranking_metrics(model: torch.nn.Module,
 
             logits, _, _ = model(input_batch)
             top_ids = torch.topk(logits, k=k, dim=-1).indices  # (B, k)
-            last_targets = target_batch[:, -1]                 # (B,)
+            last_targets = target_batch#[:, -1]                 # (B,)
 
             for i in range(input_batch.size(0)):
                 target_id = last_targets[i].item()
@@ -340,8 +340,7 @@ if __name__ == "__main__":
         early_stopping = EarlyStopping(patience=5, delta=0.01)
 
         customized_collate_fn = partial(
-            train_collate_fn,
-            device=device,
+            collate_fn,
             context_length=seq_len,
             pad_token_id=tokenizer.token_to_id("[PAD]"),
         )
@@ -395,7 +394,7 @@ if __name__ == "__main__":
 
             for batch_idx, (input_batch, target_batch) in enumerate(train_dataloader):
 
-                target_batch = target_batch[:, -1].unsqueeze(1)
+                #target_batch = target_batch[:, -1].unsqueeze(1)
             
                 
                 optimizer.zero_grad()
