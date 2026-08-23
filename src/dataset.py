@@ -72,8 +72,42 @@ class DressipiDataset(Dataset):
 
         # Add <s> and </s> token
         return item_sequence_ids
+
+class ItemDataset(Dataset):
+    def __init__(self, file_path, tokenizer):
+        super().__init__()
         
-          
+        # Load the Parquet file
+        self.data = pq.read_table(file_path, columns=["sequence_item_ids"])
+        self.tokenizer_src = tokenizer
+        
+        # Assuming the DataFrame has features in columns and the last column is the label
+        self.features = self.data['sequence_item_ids'].to_pandas().values
+        
+
+    def __len__(self):
+        # returns length of data
+        return self.data.shape[0]
+
+    def __getitem__(self, idx):
+        
+        src_items = self.features[idx]
+        
+        
+        # Transform items into ids
+        item_sequence_ids = []
+        for item in src_items:
+            item_id = self.tokenizer_src.token_to_id(item)
+            if item_id is None: 
+                item_sequence_ids.append(self.tokenizer_src.token_to_id("[UNK]"))
+            else:
+                item_sequence_ids.append(item_id)
+                
+        
+
+        # Add <s> and </s> token
+        return item_sequence_ids
+        
 
 
 
