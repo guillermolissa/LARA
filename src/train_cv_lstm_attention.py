@@ -8,7 +8,7 @@ import numpy as np
 from tqdm.auto import tqdm
 from typing import Dict, List, Tuple
 from lstm import LSTMAttentionModel
-from dataset import DressipiDataset
+from dataset import ItemDataset
 from torch.utils.data import DataLoader , random_split
 from custom_collate import collate_fn
 from functools import partial
@@ -29,7 +29,7 @@ def load_data(file_path: str,  tokenizer: Tokenizer):
     
     print("Loading dataset...")
     # It only has the train split, so we divide it overselves
-    ds = DressipiDataset(file_path=file_path, tokenizer=tokenizer) 
+    ds = ItemDataset(file_path=file_path, tokenizer=tokenizer) 
         
     return ds
 
@@ -200,6 +200,8 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
     else:
         device = "cpu"
 
+    if requested != device:
+        print("USING DEVICE FOUND: ", device)
 
     # Set seed for the experiment
     set_seed(cfg_hyperparam["seed"])
@@ -323,10 +325,8 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
                             ,job_type=run_name
                             ,reinit=True, config=config)
 
-
-            
-        print("RUN WANDB INFO\n")
-        print("ENTITY: ", cfg_experiment["entity"], " - PROJECT: ", cfg_experiment["project"] ," - GROUP: ", GROUP)
+            print("RUN WANDB INFO\n")
+            print("ENTITY: ", cfg_experiment["entity"], " - PROJECT: ", cfg_experiment["project"] ," - GROUP: ", GROUP)
 
         # Sample elements randomly from a given list of ids, no replacement.
         train_subsampler = torch.utils.data.SubsetRandomSampler(train_ids)
@@ -481,9 +481,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train a LARA model using CV')
     parser.add_argument('-s', '--source', type=str, default=None,
                         help='Choose a source. Available options are `dressipi`, `trivago` and `spotify`')
-    parser.add_argument('-wb', '--wandb', type=bool, default=False,
+    parser.add_argument('-wb', '--wandb', action='store_true', default=False,
                             help='Enable the weights and biases tracking experiment.')
-    parser.add_argument('-v', '--verbose', type=bool, default=True,
+    parser.add_argument('-v', '--verbose', action='store_true', default=True,
                         help='Enable verbose output.')
 
     args = parser.parse_args()
@@ -501,4 +501,4 @@ if __name__ == "__main__":
     cfg['source']=args.source
 
 
-    train_cv(cfg=cfg, track_experiment=args.source.wandb, verbose=args.source.verbose)
+    train_cv(cfg=cfg, track_experiment=args.wandb, verbose=args.verbose)
