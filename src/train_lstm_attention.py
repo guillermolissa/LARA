@@ -1,41 +1,27 @@
 import math
 import os
 import warnings
+import argparse
 from pathlib import Path
 import torch
+import numpy as np
 from tqdm.auto import tqdm
 from typing import Dict, List, Tuple
 from lstm import LSTMAttentionModel
-from dataset import DressipiDataset
+from dataset import ItemDataset
 from torch.utils.data import DataLoader , random_split
-from custom_collate import train_collate_fn
+from custom_collate import collate_fn
 from functools import partial
 #from data_setup import create_dataloaders
 from utils import set_seed, load_config, save_model, build_model_name
-import model_builder   # Adjust the import based on the actual location of GPTModel
 from torchinfo import summary
 from tokenizer import get_tokenizer
 from tokenizers import Tokenizer
 import torch.multiprocessing as mp
+import metrics
 warnings.filterwarnings("ignore")  # To ignore user warnings
 
-# Setup hyperparameters
-#NUM_WORKERS = os.cpu_count()
-#print("NUM_WORKERS: ", NUM_WORKERS)
 
-
-
-
-
-
-
-# # Create DataLoaders with help from data_setup.py
-# train_dataloader, val_dataloader, _ = create_dataloaders(
-#     file_path=Path(cfg_data["feature_store_dir"], "train", cfg_data["feature_store_name"].rsplit('.', 1)[0] + ".parquet"),
-#     tokenizer_path=cfg_data["tokenizer_path"],
-#     seq_len=cfg_model["context_length"],
-#     batch_size=cfg_hyperparam["batch_size"]
-# )
 
 def load_data(file_path: str,  tokenizer: Tokenizer, validation_ratio: float=0.1):
     
@@ -45,7 +31,7 @@ def load_data(file_path: str,  tokenizer: Tokenizer, validation_ratio: float=0.1
 
     print("Loading dataset...")
     # It only has the train split, so we divide it overselves
-    ds = DressipiDataset(file_path=file_path, tokenizer=tokenizer) 
+    ds = ItemDataset(file_path=file_path, tokenizer=tokenizer) 
         
     # Keep 90% for training, 10% for validation
     train_ds_size = int(train_ratio * len(ds))
@@ -58,13 +44,6 @@ def load_data(file_path: str,  tokenizer: Tokenizer, validation_ratio: float=0.1
 
 
 
-# def _warmup_cosine_schedule(optimizer, warmup_steps: int, total_steps: int):
-#     def lr_lambda(current_step: int):
-#         if current_step < warmup_steps:
-#             return float(current_step) / float(max(1, warmup_steps))
-#         progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-#         return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
-#     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 def calc_loss_batch(input_batch, target_batch, model, device,
@@ -77,7 +56,7 @@ def calc_loss_batch(input_batch, target_batch, model, device,
         logits, _, _ = model(input_batch)
         # Only the last position is used at inference — train against the same target
         logits_last  = logits#[:, -1, :]       # (B, vocab_size)
-        targets_last = target_batch[:, -1]     # (B,)
+        targets_last = target_batch#[:, -1]     # (B,)
         loss = torch.nn.functional.cross_entropy(
             logits_last, targets_last,
             ignore_index=-100,
@@ -110,8 +89,6 @@ def calc_loss_loader(data_loader, model, device, num_batches=None,
     return total_loss / num_batches
 
 
-#train_dataloader = DataLoader(train_ds, batch_size=batch_size, num_workers=num_workers, shuffle=True)
-#val_dataloader = DataLoader(val_ds, batch_size=batch_size, num_workers=num_workers, shuffle=False)
 
 def validate_model(model: torch.nn.Module,
                    train_dataloader: torch.utils.data.DataLoader,
@@ -137,12 +114,63 @@ def validate_model(model: torch.nn.Module,
     model.train()
     return train_loss, val_loss
 
-if __name__ == "__main__":
+
+def evaluate_ranking_metrics(model: torch.nn.Module,
+                             val_dataloader: torch.utils.data.DataLoader,
+                             tokenizer: Tokenizer,
+                             device: torch.device,
+                             k: int = 10) -> Dict[str, float]:
+    """Aggregates validation batch predictions and scores them with metrics.py,
+    mirroring the evaluation logic in evaluation.py."""
+    model.eval()
+    target_items_out, predicted_items_out = [], []
+
+    with torch.no_grad():
+        for input_batch, target_batch in val_dataloader:
+            input_batch = input_batch.to(device)
+            target_batch = target_batch.to(device)
+
+            logits, _, _ = model(input_batch)
+            top_ids = torch.topk(logits, k=k, dim=-1).indices  # (B, k)
+            last_targets = target_batch#[:, -1]                 # (B,)
+
+            for i in range(input_batch.size(0)):
+                target_id = last_targets[i].item()
+                if target_id == -100:
+                    continue
+                predicted_items_out.append(
+                    [tokenizer.id_to_token(tid) for tid in top_ids[i].tolist()]
+                )
+                target_items_out.append([tokenizer.id_to_token(target_id)])
+
+    model.train()
+
+    metric_names = ["hr", "mrr", "precision", "recall", "map", "ndcg"]
+    if not target_items_out:
+        return {f"{name}_{k}": float("nan") for name in metric_names}
+
+    pairs = list(zip(target_items_out, predicted_items_out))
+    hr = np.mean([metrics.hit_rate_k(gt, pred, k=k) for gt, pred in pairs])
+    mrr = np.mean([metrics.rr_k(gt, pred, k=k) for gt, pred in pairs])
+    precision = np.mean([metrics.precision_k(gt, pred, k=k) for gt, pred in pairs])
+    recall = np.mean([metrics.recall_k(gt, pred, k=k) for gt, pred in pairs])
+    map_score = np.mean([metrics.apk(gt, pred, k=k) for gt, pred in pairs])
+    ndcg = np.mean([metrics.ndcg_k(gt, pred, k=k) for gt, pred in pairs])
+
+    return {
+        f"hr_{k}": hr,
+        f"mrr_{k}": mrr,
+        f"precision_{k}": precision,
+        f"recall_{k}": recall,
+        f"map_{k}": map_score,
+        f"ndcg_{k}": ndcg,
+    }
+
+def train_model(cfg: dict, verbose:bool):
 
     mp.set_start_method('spawn', force=True)
 
 
-    cfg = load_config("config/config.yaml")
     cfg_model, cfg_data, cfg_hyperparam = cfg["model"], cfg["data"], cfg["hyperparameters"]
 
     validation_ratio = cfg_hyperparam["validation_ratio"]
@@ -157,6 +185,9 @@ if __name__ == "__main__":
         device = "mps"
     else:
         device = "cpu"
+
+    if requested != device:
+            print("USING DEVICE FOUND: ", device)
 
 
     # Set seed for the experiment
@@ -197,8 +228,7 @@ if __name__ == "__main__":
 
 
     customized_collate_fn = partial(
-        train_collate_fn,
-        device=device,
+        collate_fn,
         context_length=seq_len,
         pad_token_id=tokenizer.token_to_id("[PAD]"),
     )
@@ -231,35 +261,35 @@ if __name__ == "__main__":
     else:
         print("Using Linear Softmax")
         model = LSTMAttentionModel(
-            embedded_dim=cfg_model["emb_dim"],
-            hidden_dim=cfg_model["hidden_dim"],
-            layer_dim=cfg_model["n_layers"],
-            items_size=cfg_model["items_size"],
-            n_head=cfg_model["n_heads"],
-            drop_rate=cfg_model["drop_rate"],
-            context_length=cfg_model["context_length"]
-        ).to(device)
+                        embedded_dim=cfg_model["emb_dim"],
+                        hidden_dim=cfg_model["hidden_dim"],
+                        layer_dim=cfg_model["n_layers"],
+                        items_size=cfg_model["items_size"],
+                        n_head=cfg_model["n_heads"],
+                        drop_rate=cfg_model["drop_rate"],
+                        context_length=cfg_model["context_length"]
+                    ).to(device)
 
 
         # Set loss and optimizer
         #loss_fn = torch.nn.CrossEntropyLoss()
 
-    # TODO: Set optimizer from config file
+    optimizer = None
+    if cfg_hyperparam["optimizer"] == "AdamW":
+        optimizer = torch.optim.AdamW(model.parameters(), 
+                                    lr=cfg_hyperparam["learning_rate"], 
+                                    weight_decay=cfg_hyperparam["weight_decay"])
+    elif cfg_hyperparam["optimizer"] == "SGD":
+        optimizer = torch.optim.SGD(model.parameters(), 
+                                    lr=cfg_hyperparam["learning_rate"], 
+                                    weight_decay=cfg_hyperparam["weight_decay"])
+    else:
+        raise ValueError(f"Unsupported optimizer: {cfg_hyperparam['optimizer']}")
 
-
-    optimizer = torch.optim.AdamW(model.parameters(), 
-                                lr=cfg_hyperparam["learning_rate"], 
-                                weight_decay=cfg_hyperparam["weight_decay"])
-
-
-  
-    #summary(model, input_size=input.shape)
-
-    #scheduler = _warmup_cosine_schedule(optimizer, warmup_steps, total_steps)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=20
-    )
+            optimizer, T_0=20
+        )
 
     start_epoch = 0
     best_loss = float('inf')
@@ -287,7 +317,7 @@ if __name__ == "__main__":
 
         for batch_idx, (input_batch, target_batch) in enumerate(train_dataloader):
 
-            target_batch = target_batch[:, -1].unsqueeze(1)
+            #target_batch = target_batch[:, -1].unsqueeze(1)
         
             
             optimizer.zero_grad()
@@ -325,8 +355,16 @@ if __name__ == "__main__":
                 #if run is not None:
                 #    run.log({"train/train_loss": train_loss, "val/val_loss": val_loss})
 
-        print(f"Ep {epoch+1} (Step {global_step}): "
+        if verbose: 
+            val_ranking_metrics = evaluate_ranking_metrics(
+                            model, val_dataloader, tokenizer, device, k=10,
+                        )
+            
+            print(f"Ep {epoch+1} (Step {global_step}): "
                 f"Train loss {train_loss:.3f}, Val loss {val_loss:.3f}, Total loss {total_loss:.3f}, "
+                f"Val HR@10 {val_ranking_metrics['hr_10']:.3f}, Val MRR@10 {val_ranking_metrics['mrr_10']:.3f}, "
+                f"Val Precision@10 {val_ranking_metrics['precision_10']:.3f}, Val Recall@10 {val_ranking_metrics['recall_10']:.3f}, "
+                f"Val MAP@10 {val_ranking_metrics['map_10']:.3f}, Val NDCG@10 {val_ranking_metrics['ndcg_10']:.3f}, "
                 f"LR {scheduler.get_last_lr()[0]:.2e}")
 
         checkpoint = {
@@ -345,3 +383,30 @@ if __name__ == "__main__":
     save_model(model=model,
                     target_dir=cfg_model["folder"],
                     model_name=model_filename)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Train a LARA model using CV')
+    parser.add_argument('-s', '--source', type=str, default=None,
+                        help='Choose a source. Available options are `dressipi`, `trivago` and `spotify`')
+    
+    parser.add_argument('-v', '--verbose', action='store_true', default=False,
+                        help='Enable verbose output.')
+
+
+
+    args = parser.parse_args()
+
+    assert(args.source in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`")
+
+    cfg =None
+    if args.source == 'dressipi':
+        cfg = load_config("config/dressipi.yaml")
+    elif args.source == 'trivago':
+        cfg = load_config("config/trivago.yaml")
+    else: 
+        cfg = load_config("config/spotify.yaml")
+
+    cfg['source']=args.source
+
+
+    train_model(cfg=cfg, verbose=args.verbose)
