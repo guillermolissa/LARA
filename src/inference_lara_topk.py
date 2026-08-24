@@ -3,7 +3,7 @@ import torch
 from dataset import DressipiDataset
 from torch.utils.data import DataLoader
 import torch.multiprocessing as mp
-from custom_collate import test_collate_fn
+from custom_collate import collate_fn
 from utils import set_seed, load_config, load_model, build_model_name
 from functools import partial
 from lstm import LSTMAttentionModel   # Adjust the import based on the actual location of LSTMModel
@@ -41,10 +41,10 @@ def predict_topk(model, input_batch: torch.Tensor, top_n: int, use_adaptive_soft
     return torch.topk(logits, k=top_n, dim=-1).indices    # (B, top_n)
 
 
-def inference_topk(top_n: int, dynamic_target_length: bool = False):
+def inference_topk(top_n: int, cfg, dynamic_target_length: bool = False):
     print("Init top-k inference")
     print("Loading configuration")
-    cfg = load_config("config/config.yaml")
+    #cfg = load_config("config/config.yaml")
     cfg_model = cfg["model"]
     cfg_data = cfg["data"]
     cfg_hyperparam = cfg["hyperparameters"]
@@ -106,11 +106,10 @@ def inference_topk(top_n: int, dynamic_target_length: bool = False):
         top_n = vocab_size
 
     customized_collate_fn = partial(
-        test_collate_fn,
-        device=device,
+        collate_fn,
         context_length=seq_len,
         pad_token_id=tokenizer.token_to_id("[PAD]"),
-        dynamic_target_length=dynamic_target_length,
+        #dynamic_target_length=dynamic_target_length,
     )
 
     test_dataloader = DataLoader(
@@ -158,8 +157,10 @@ def inference_topk(top_n: int, dynamic_target_length: bool = False):
 
         # Decode targets
         for target_ids in target_batch:
-            decoded = [tokenizer.id_to_token(tid) for tid in target_ids.tolist()]
+            decoded = [tokenizer.id_to_token(target_ids)]
             target_items_out.append(decoded)
+        #target_decoded = [tokenizer.id_to_token(tid) for tid in target_batch]
+        
 
     output_json = {
         "input_items": input_items_out,
@@ -184,9 +185,14 @@ if __name__ == "__main__":
     except RuntimeError:
         pass
 
+    
     parser = argparse.ArgumentParser(
         description="Generate top-N recommendations via a single forward pass (no autoregressive loop)."
     )
+
+    parser.add_argument('-s', '--source', type=str, default=None,
+                            help='Choose a source. Available options are `dressipi`, `trivago` and `spotify`')
+    
     parser.add_argument(
         "-n", "--top_n", type=int, required=False, default=10,
         help="Number of top-scoring items to return per sequence. E.g.: 10",
@@ -198,7 +204,20 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    assert(args.source in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`")
+    
+    cfg =None
+    if args.source == 'dressipi':
+        cfg = load_config("config/dressipi.yaml")
+    elif args.source == 'trivago':
+        cfg = load_config("config/trivago.yaml")
+    else: 
+        cfg = load_config("config/spotify.yaml")
+
+    cfg['source']=args.source
+
     inference_topk(
         top_n=args.top_n,
+        cfg=cfg,
         dynamic_target_length=args.dynamic_target_length,
     )
