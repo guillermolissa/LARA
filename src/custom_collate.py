@@ -1,4 +1,9 @@
+from __future__ import annotations
+
+
 import torch
+
+IGNORE_INDEX = -100
 
 def collate_fn(
     batch,
@@ -58,6 +63,48 @@ def collate_fn(
 
     return inputs_tensor, targets_tensor
 
+def collate_train_fn(batch, pad_token_id: int = 0, context_length: int | None = None):
+    """
+    Args:
+        batch:          list of token-id lists (one per session).
+        pad_token_id:   id used to right-pad ``inputs``.
+        context_length: max number of *input* tokens. The last
+                        ``context_length + 1`` items of each session are kept
+                        (the +1 leaves a target for the final context item).
+
+    Returns:
+        inputs:  (B, T) LongTensor, right-padded.
+        targets: (B, T) LongTensor, ``inputs`` shifted left by one; pad /
+                 non-predictable positions are ``IGNORE_INDEX``.
+        lengths: (B,) LongTensor, real token count in each ``inputs`` row.
+    """
+    if context_length is not None:
+        cap = context_length + 1
+        batch = [seq[-cap:] for seq in batch]
+
+    width = max((len(seq) for seq in batch), default=2)
+    width = max(width - 1, 1)  # number of input positions
+
+    inputs, targets, lengths = [], [], []
+    for seq in batch:
+        x = list(seq[:-1])
+        y = list(seq[1:])
+        n = len(x)
+        pad = width - n
+        inputs.append(x + [pad_token_id] * pad)
+        targets.append(y + [IGNORE_INDEX] * pad)
+        lengths.append(max(n, 1))
+
+    return (
+        torch.tensor(inputs, dtype=torch.long),
+        torch.tensor(targets, dtype=torch.long),
+        torch.tensor(lengths, dtype=torch.long),
+    )
+
+
+
+
+
 
 
 if __name__ == "__main__":
@@ -76,10 +123,21 @@ if __name__ == "__main__":
     print("Targets:")
     print(targets)
 
-    print("----------- CONTEXT_LEN 10 -----------\n")
+    print("\n----------- CONTEXT_LEN 10 -----------\n")
     inputs, targets = collate_fn(batch, pad_token_id=PAD, context_length=10)
     print("Inputs:")
     print(inputs)
     print("Targets:")
     print(targets)
 
+
+    print("\n----------- TRAIN CONTEXT_LEN 5 -----------\n")
+    demo = [
+            [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
+            [31, 32, 33, 34],
+            [7, 8, 9],
+        ]
+    x, y, ln = collate_train_fn(demo, pad_token_id=PAD, context_length=5)
+    print("inputs\n", x)
+    print("targets\n", y)
+    print("lengths", ln)
