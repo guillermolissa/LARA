@@ -1,19 +1,11 @@
 """Session-based recommendation baselines.
 
-Implements four lightweight baselines to benchmark a custom sequential model:
+Baseline models to benchmark a custom sequential model:
 
     1. MostPopular         - global item frequency, context-agnostic.
     2. FirstOrderMarkov    - P(i_t | i_{t-1}) from the last context item.
     3. AssociationRules    - co-occurrence / confidence w.r.t. the context items.
     4. SessionKNN          - neighbour sessions by set similarity with the context.
-
-All models expose ``.fit(sessions)`` and ``.predict(context, k)`` and gracefully
-fall back to MostPopular for cold-start / out-of-vocabulary contexts so that the
-Top-K list is always fully populated.
-
-Data is read with polars; the heavy lifting (transition / co-occurrence counts,
-inverted index) is plain Python dict/Counter which is fast enough for the
-Dressipi-sized data (~0.7M train sessions).
 
 Usage
 -----
