@@ -38,7 +38,7 @@ from tqdm.auto import tqdm
 
 import metrics
 from custom_collate_v2 import IGNORE_INDEX, collate_fn_v2
-from dataset import DressipiDataset
+from dataset import ItemDataset
 from lstm_v2 import LSTMAttentionRec
 from tokenizer import get_tokenizer
 from utils import EarlyStopping, build_model_name, load_config, set_seed
@@ -107,7 +107,7 @@ def evaluate(model, loader, tokenizer, device, k: int, special_ids: list[int]) -
 def main() -> None:
     ap = argparse.ArgumentParser(description="Train lstm_v2.LSTMAttentionRec")
     ap.add_argument("--config", default="config/config.yaml")
-    ap.add_argument("--source", choices=["dressipi", "trivago", "spotify"], default=None)
+    ap.add_argument("--source", choices=["dressipi", "trivago", "spotify"], default="dressipi")
     ap.add_argument("--eval-k", type=int, default=20)
     args = ap.parse_args()
 
@@ -126,7 +126,7 @@ def main() -> None:
     m["items_size"] = tokenizer.get_vocab_size()
 
     train_file = Path(d["train"], d["train_feature_store"].rsplit(".", 1)[0] + ".parquet")
-    dataset = DressipiDataset(file_path=train_file, tokenizer=tokenizer)
+    dataset = ItemDataset(file_path=train_file, tokenizer=tokenizer)
 
     n_val = int(len(dataset) * hp["validation_ratio"])
     n_train = len(dataset) - n_val
