@@ -37,7 +37,7 @@ from functools import partial
 from tqdm.auto import tqdm
 
 import metrics
-from custom_collate_v2 import IGNORE_INDEX, collate_fn_v2
+from custom_collate import IGNORE_INDEX, collate_train_fn
 from dataset import ItemDataset
 from lstm_v2 import LSTMAttentionRec
 from tokenizer import get_tokenizer
@@ -134,7 +134,7 @@ def main() -> None:
     train_ds, val_ds = random_split(dataset, [n_train, n_val], generator=split_gen)
     print(f"dataset={len(dataset):,}  train={n_train:,}  val={n_val:,}")
 
-    collate = partial(collate_fn_v2, pad_token_id=pad_id, context_length=m["context_length"])
+    collate = partial(collate_train_fn, pad_token_id=pad_id, context_length=m["context_length"])
     num_workers = hp.get("num_workers") or 0
     train_dl = DataLoader(train_ds, batch_size=hp["batch_size"], shuffle=True,
                           drop_last=True, collate_fn=collate, num_workers=num_workers)

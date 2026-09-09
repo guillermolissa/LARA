@@ -8,7 +8,7 @@ swaps in the whole v2 pipeline:
 
   * model      → ``lstm_v2.LSTMAttentionRec`` (padding_idx, boolean causal mask,
                  key_padding_mask, per-step logits, weight tying, recency bias);
-  * collate    → ``custom_collate_v2.collate_fn_v2`` (right-padding, shifted
+  * collate    → ``custom_collate.collate_train_fn`` (right-padding, shifted
                  per-step targets with ``IGNORE_INDEX``, returns ``lengths``);
   * loss       → per-step cross-entropy over the shifted target sequence
                  (every position supervised, not just the last item);
@@ -44,7 +44,7 @@ from tqdm.auto import tqdm
 import wandb
 
 import metrics
-from custom_collate_v2 import IGNORE_INDEX, collate_fn_v2
+from custom_collate import IGNORE_INDEX, collate_train_fn
 from dataset import ItemDataset
 from lstm_v2 import LSTMAttentionRec
 from tokenizer import get_tokenizer
@@ -174,7 +174,7 @@ def main() -> None:
     train_ds, val_ds = random_split(dataset, [n_train, n_val], generator=split_gen)
     print(f"dataset={len(dataset):,}  train={n_train:,}  val={n_val:,}")
 
-    collate = partial(collate_fn_v2, pad_token_id=pad_id, context_length=m["context_length"])
+    collate = partial(collate_train_fn, pad_token_id=pad_id, context_length=m["context_length"])
     train_dl = DataLoader(train_ds, batch_size=hp["batch_size"], shuffle=True,
                           drop_last=True, collate_fn=collate, num_workers=num_workers)
     val_dl = DataLoader(val_ds, batch_size=hp["batch_size"], shuffle=False,
@@ -234,7 +234,7 @@ def main() -> None:
     wb_config.update(
         train_feature_store=d["train_feature_store"],
         config_path=cfg_path,
-        collate="collate_fn_v2",
+        collate="collate_train_fn",
         model_class="LSTMAttentionRec",
         loss_fn="per_step_cross_entropy",
         scheduler="warmup_cosine",
