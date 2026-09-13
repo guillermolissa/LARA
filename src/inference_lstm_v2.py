@@ -27,8 +27,8 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from custom_collate_v2 import IGNORE_INDEX, collate_fn_v2
-from dataset import DressipiDataset
+from custom_collate import IGNORE_INDEX, collate_train_fn
+from dataset import ItemDataset
 from lstm_v2 import LSTMAttentionRec
 from tokenizer import get_tokenizer
 from utils import build_model_name, load_config, load_model, set_seed
@@ -66,7 +66,7 @@ def main() -> None:
     m["items_size"] = tokenizer.get_vocab_size()
 
     test_file = Path(d["test"], d["test_feature_store"].rsplit(".", 1)[0] + ".parquet")
-    test_ds = DressipiDataset(file_path=test_file, tokenizer=tokenizer)
+    test_ds = ItemDataset(file_path=test_file, tokenizer=tokenizer)
     print(f"test dataset={len(test_ds):,}")
 
     model = LSTMAttentionRec(
@@ -88,7 +88,7 @@ def main() -> None:
     model.eval()
 
     top_n = min(args.top_n, tokenizer.get_vocab_size())
-    collate = partial(collate_fn_v2, pad_token_id=pad_id, context_length=m["context_length"])
+    collate = partial(collate_train_fn, pad_token_id=pad_id, context_length=m["context_length"])
     loader = DataLoader(test_ds, batch_size=hp["batch_size"], shuffle=False,
                         drop_last=False, collate_fn=collate,
                         num_workers=hp.get("num_workers") or 0)
