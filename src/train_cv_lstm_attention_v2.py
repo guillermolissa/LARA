@@ -9,7 +9,7 @@ but swaps in the v2 pipeline (see ``lstm_v2.py`` for the full rationale):
   * model      → ``lstm_v2.LSTMAttentionRec`` (padding_idx, boolean causal
                  mask, key_padding_mask, per-step logits, weight tying,
                  recency bias);
-  * collate    → ``custom_collate.collate_train_fn`` (right-padding, shifted
+  * collate    → ``custom_collate.collate_next_item_fn`` (right-padding, shifted
                  per-step targets with ``IGNORE_INDEX``, returns ``lengths``);
   * loss       → per-step cross-entropy over the shifted target sequence
                  (every position supervised, not just the last item);
@@ -47,7 +47,7 @@ from tqdm.auto import tqdm
 import wandb
 
 import metrics
-from custom_collate import IGNORE_INDEX, collate_train_fn
+from custom_collate import IGNORE_INDEX, collate_next_item_fn
 from dataset import ItemDataset
 from lstm_v2 import LSTMAttentionRec
 from tokenizer import get_tokenizer
@@ -211,7 +211,7 @@ def train_cv(cfg: dict, track_experiment: bool, verbose: bool, eval_k: int) -> N
     max_grad_norm = cfg_hp.get("max_grad_norm", 1.0)
     label_smoothing = cfg_hp.get("label_smoothing", 0.0)
 
-    collate = partial(collate_train_fn, pad_token_id=pad_id, context_length=seq_len)
+    collate = partial(collate_next_item_fn, pad_token_id=pad_id, context_length=seq_len)
 
     GROUP = cfg_ex["group"] + wandb.util.generate_id()
 
@@ -263,7 +263,7 @@ def train_cv(cfg: dict, track_experiment: bool, verbose: bool, eval_k: int) -> N
             train_feature_store=cfg_data["train_feature_store"],
             model_name=model_filename,
             model_class="LSTMAttentionRec",
-            collate="collate_train_fn",
+            collate="collate_next_item_fn",
             loss_fn="per_step_cross_entropy",
             scheduler="warmup_cosine",
             selection_metric=f"val_ndcg@{eval_k}",

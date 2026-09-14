@@ -27,7 +27,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from custom_collate import IGNORE_INDEX, collate_train_fn
+from custom_collate import IGNORE_INDEX, collate_next_item_fn
 from dataset import ItemDataset
 from lstm_v2 import LSTMAttentionRec
 from tokenizer import get_tokenizer
@@ -88,7 +88,7 @@ def main() -> None:
     model.eval()
 
     top_n = min(args.top_n, tokenizer.get_vocab_size())
-    collate = partial(collate_train_fn, pad_token_id=pad_id, context_length=m["context_length"])
+    collate = partial(collate_next_item_fn, pad_token_id=pad_id, context_length=m["context_length"])
     loader = DataLoader(test_ds, batch_size=hp["batch_size"], shuffle=False,
                         drop_last=False, collate_fn=collate,
                         num_workers=hp.get("num_workers") or 0)
