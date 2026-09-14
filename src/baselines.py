@@ -313,6 +313,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out", default=OUTPUT_DIR)
     p.add_argument("--n", type=int, default=N, help="context window length")
     p.add_argument("--k", type=int, default=K, help="top-k recommendations")
+    p.add_argument("--source", default='dressipi', help="source dataset")
     p.add_argument("--models", nargs="+", default=list(MODEL_REGISTRY),
                    choices=list(MODEL_REGISTRY))
     return p.parse_args()
@@ -360,8 +361,8 @@ def main() -> None:
                 "predicted_items": pl.List(pl.String),
                 "target_items": pl.List(pl.String),
             },
-        ).write_parquet(out_dir / f"{key}_predictions.parquet")
-        print(f"         -> {out_dir / f'{key}_predictions.parquet'}")
+        ).write_parquet(out_dir / f"{key}_{args.source}_predictions.parquet")
+        print(f"         -> {out_dir / f'{key}_{args.source}_predictions.parquet'}")
 
 
 if __name__ == "__main__":
