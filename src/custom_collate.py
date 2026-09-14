@@ -7,13 +7,15 @@ IGNORE_INDEX = -100
 
 def collate_fn(
     batch,
-    pad_token_id=50256,
-    context_length=None,
+    pad_token_id: int = 0,
+    right_pad: bool = True,
+    context_length: int | None = None
 ):
     """Collate function for training dataloader. Prepares input and target tensors for the model.   
     Args:
         batch: List of sequences (lists of token IDs) in the batch.
         pad_token_id: Token ID used for padding shorter sequences.
+        right_pad: If True, pad sequences on the right; otherwise, pad on the left.
         context_length: Maximum length of the input sequence (context) for the model. If None, no truncation is applied and the longest sequence in the batch is used.
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: Prepared input and target tensors.
@@ -32,11 +34,17 @@ def collate_fn(
         new_item = new_item[-batch_max_length:] # Keep only the last context_length items if specified
        
         # Pad sequences to max_length
-        input_padded = (
-            #new_item + [pad_token_id] *
-            #    (batch_max_length - len(new_item))
-            [pad_token_id] * (batch_max_length - len(new_item)) + new_item
-        )
+        if right_pad:
+            input_padded = (
+                new_item[:-1] + [pad_token_id] *
+                (batch_max_length - len(new_item[:-1]))
+            )
+        else:
+            input_padded = (
+                #new_item + [pad_token_id] *
+                #    (batch_max_length - len(new_item))
+                [pad_token_id] * (batch_max_length - len(new_item)) + new_item
+            )
 
         # target_padded = (
         #     new_item + [pad_token_id] *
@@ -63,7 +71,7 @@ def collate_fn(
 
     return inputs_tensor, targets_tensor
 
-def collate_train_fn(batch, pad_token_id: int = 0, context_length: int | None = None):
+def collate_next_item_fn(batch, pad_token_id: int = 0, context_length: int | None = None):
     """
     Args:
         batch:          list of token-id lists (one per session).
@@ -116,28 +124,43 @@ if __name__ == "__main__":
             [7, 8, 9, 11, 12, 13, 14, 15],
         ]
 
-    print("----------- CONTEXT_LEN 3 -----------\n")
-    inputs, targets = collate_fn(batch, pad_token_id=PAD, context_length=3)
+    print("----------- CONTEXT_LEN 3 RIGHT_PAD -----------\n")
+    inputs, targets = collate_fn(batch, pad_token_id=PAD, right_pad=True, context_length=3)
     print("Inputs:")
     print(inputs)
     print("Targets:")
     print(targets)
 
-    print("\n----------- CONTEXT_LEN 10 -----------\n")
-    inputs, targets = collate_fn(batch, pad_token_id=PAD, context_length=10)
+    print("\n----------- CONTEXT_LEN 10 RIGHT_PAD -----------\n")
+    inputs, targets = collate_fn(batch, pad_token_id=PAD, right_pad=True, context_length=10)
     print("Inputs:")
     print(inputs)
     print("Targets:")
     print(targets)
 
 
-    print("\n----------- TRAIN CONTEXT_LEN 5 -----------\n")
+    print("----------- CONTEXT_LEN 3 LEFT_PAD -----------\n")
+    inputs, targets = collate_fn(batch, pad_token_id=PAD, right_pad=False, context_length=3)
+    print("Inputs:")
+    print(inputs)
+    print("Targets:")
+    print(targets)
+
+    print("\n----------- CONTEXT_LEN 10 LEFT_PAD -----------\n")
+    inputs, targets = collate_fn(batch, pad_token_id=PAD, right_pad=False, context_length=10)
+    print("Inputs:")
+    print(inputs)
+    print("Targets:")
+    print(targets)
+
+
+    print("\n----------- NEXT ITEM CONTEXT_LEN 5 -----------\n")
     demo = [
             [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
             [31, 32, 33, 34],
             [7, 8, 9],
         ]
-    x, y, ln = collate_train_fn(demo, pad_token_id=PAD, context_length=5)
+    x, y, ln = collate_next_item_fn(demo, pad_token_id=PAD, context_length=5)
     print("inputs\n", x)
     print("targets\n", y)
     print("lengths", ln)
