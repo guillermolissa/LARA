@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 import json
-
+import torch.nn.functional as F
 
 def _build_meta_embedding(
     cfg: dict,
@@ -161,6 +163,187 @@ class LSTMAttentionModel(nn.Module):
 
 
 
+class LSTMAttentionRec(nn.Module):
+    def __init__(
+        self, 
+        items_size: int, 
+        embedded_dim: int = 128, 
+        hidden_dim: int = 128, 
+        n_layers: int = 1, 
+        n_heads: int = 2, 
+        drop_rate: float = 0.1,
+        pad_token_id: int = 0,
+        tie_weights: bool = True,
+        use_recency_bias: bool = True,
+        recency_decay: float = 0.9,
+        context_length: int = 10
+    ) -> None:
+
+        super(LSTMAttentionRec, self).__init__()
+        self.pad_token_id = pad_token_id
+        self.hidden_dim = hidden_dim
+        self.n_layers = n_layers
+        self.tie_weights = tie_weights
+        self.use_recency_bias = use_recency_bias
+        self.recency_decay = float(recency_decay)
+        self._max_len = context_length
+        self.emb_dim = embedded_dim
+        self.embedding = nn.Embedding(items_size, embedded_dim, padding_idx=pad_token_id)
+        self.emb_drop = nn.Dropout(drop_rate)
+
+        # Small init: the embedding matrix doubles as the output projection when
+        # ``tie_weights`` is set, so an N(0, 1) default would blow up the logits.
+        # The LSTM input path compensates with a sqrt(emb_dim) scale (see forward).
+        nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
+        with torch.no_grad():
+            self.embedding.weight[pad_token_id].zero_()
+
+
+        lstm_dropout = drop_rate if n_layers > 1 else 0.0
+
+
+        self.lstm = nn.LSTM(
+            embedded_dim, 
+            hidden_dim, 
+            num_layers=n_layers, 
+            batch_first=True, 
+            dropout=lstm_dropout
+        )
+
+
+        # Self-attention over the LSTM hidden states (MHA does its own q/k/v proj).
+        self.attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=n_heads,
+            dropout=drop_rate,
+            batch_first=True,
+        )
+
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.out_drop = nn.Dropout(drop_rate)
+
+        # Tied output decoder 
+        # If the hidden_dim != emb_dim, we need a linear layer to project the hidden states to the embedding dimension before applying the output projection.
+        if tie_weights:
+            self.h2e = nn.Linear(hidden_dim, embedded_dim, bias=False) if hidden_dim != embedded_dim else None
+            self.decoder_bias = nn.Parameter(torch.zeros(items_size))
+        else:
+            self.fc = nn.Linear(hidden_dim, items_size)
+
+
+
+        # Correct: Registering the tensor as a buffer. This ensures that the tensor is moved to the appropriate device when the model is moved to a different device (e.g., GPU).
+        self.register_buffer(
+                "mask",
+                torch.triu(torch.ones(context_length, context_length),
+                            diagonal=1), persistent=False
+            )
+
+    # ----------------------------------------------------------------------
+    def _causal_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
+        if seq_len <= self._max_len:
+            return self.mask[:seq_len, :seq_len].to(device)
+        return torch.triu(
+            torch.ones(seq_len, seq_len, dtype=torch.bool, device=device), diagonal=1
+        )
+
+    # Recency bias: a decaying weight for each position in the sequence, applied to the attention scores before softmax. 
+    # This encourages the model to pay more attention to recent items in the sequence.
+    def _decode(self, h: torch.Tensor) -> torch.Tensor:
+            if not self.tie_weights:
+                return self.fc(h)
+            if self.h2e is not None:
+                h = self.h2e(h)
+            return F.linear(h, self.embedding.weight, self.decoder_bias)
+
+    @staticmethod
+    def _infer_lengths(x: torch.Tensor, pad_token_id: int) -> torch.Tensor:
+        return (x != pad_token_id).sum(dim=1)
+    
+
+
+    # ----------------------------------------------------------------------
+
+    def forward(self, x, h0=None, c0=None):
+        """
+            Args:
+                x:       (B, L) right-padded token-id tensor.
+                lengths: (B,) count of real tokens per row. Inferred (assuming
+                            right-padding) when ``None``.
+    
+            Returns:
+                logits:  (B, L, V) next-item logits at every position.
+                (hn, cn): final LSTM states.
+        """
+        # Initialize batch size and sequence length
+        bsz, seq_len = x.shape
+        # if lengths is None:
+        #     lengths = self._infer_lengths(x, self.pad_token_id)
+        # lengths = lengths.clamp(min=1)
+
+        # Initialize hidden state and cell state if not provided
+        if h0 is None or c0 is None:
+
+            h0 = torch.zeros(self.n_layers, x.size(
+                0), self.hidden_dim).to(x.device)
+            c0 = torch.zeros(self.n_layers, x.size(
+                0), self.hidden_dim).to(x.device)
+
+
+        embedded = self.emb_drop(self.embedding(x))
+
+        lstm_out, (hn, cn) = self.lstm(embedded, (h0, c0))
+
+        # key_padding_mask = (
+        #             torch.arange(seq_len, device=x.device)[None, :] >= self._max_len
+        #         )   
+
+
+
+        attn_out, _ = self.attn(
+                    lstm_out,
+                    lstm_out,
+                    lstm_out,
+                    attn_mask=self._causal_mask(seq_len, x.device),
+                    #key_padding_mask=key_padding_mask,
+                    need_weights=False,
+                )
+        norm_out = self.norm(attn_out + lstm_out)
+        norm_out= self.out_drop(norm_out)
+
+
+        #output = self.fc(norm_out[:, -1, :])
+        output = self._decode(norm_out[:, -1, :])  
+
+        return output, hn, cn
+
+
+    # ----------------------------------------------------------------------
+    @torch.no_grad()
+    def predict_last(
+        self,
+        x: torch.Tensor,
+        lengths: torch.Tensor | None = None,
+        mask_token_ids: list[int] | None = None,
+    ) -> torch.Tensor:
+        """Logits at the last *real* position → ``(B, V)``, for top-k inference."""
+        if lengths is None:
+            lengths = self._infer_lengths(x, self.pad_token_id)
+        lengths = lengths.clamp(min=1)
+
+        logits, _ = self.forward(x, lengths)                         # (B, L, V)
+        gather_idx = (lengths - 1).view(-1, 1, 1).expand(-1, 1, logits.size(-1))
+        last = logits.gather(1, gather_idx).squeeze(1)               # (B, V)
+
+        last[:, self.pad_token_id] = float("-inf")
+        if mask_token_ids:
+            last[:, mask_token_ids] = float("-inf")
+        return last
+
+
+
+
+
 class LSTMAttentionMetaEmbModel(nn.Module):
 
   def __init__(self, cfg, tokenizer=None):
@@ -246,3 +429,5 @@ class LSTMAttentionMetaEmbModel(nn.Module):
     norm_out = self.norm(attended_out + lstm_out)
     output = self.fc(norm_out[:, -1, :])
     return output, hn, cn
+
+

@@ -7,7 +7,7 @@ import torch
 import numpy as np
 from tqdm.auto import tqdm
 from typing import Dict, List, Tuple
-from lstm import LSTMAttentionModel
+from lstm import LSTMAttentionRec
 from dataset import ItemDataset
 from torch.utils.data import DataLoader , random_split
 from custom_collate import collate_fn
@@ -201,6 +201,7 @@ def train_model(cfg: dict, verbose:bool):
     
     # Load tokenizers
     tokenizer = get_tokenizer(tokenizer_path=tokenizer_path)
+    PAD_ID = tokenizer.token_to_id("[PAD]")
 
     # Load dataset
     train_ds, val_ds = load_data(file_path=file_path, tokenizer=tokenizer, validation_ratio=validation_ratio)
@@ -260,13 +261,17 @@ def train_model(cfg: dict, verbose:bool):
         #model = model_builder.GPTAdaSoftmaxModel(cfg_model, tokenizer=tokenizer).to(device)
     else:
         print("Using Linear Softmax")
-        model = LSTMAttentionModel(
+        model = LSTMAttentionRec(
                         embedded_dim=cfg_model["emb_dim"],
                         hidden_dim=cfg_model["hidden_dim"],
-                        layer_dim=cfg_model["n_layers"],
+                        n_layers=cfg_model["n_layers"],
                         items_size=cfg_model["items_size"],
-                        n_head=cfg_model["n_heads"],
+                        n_heads=cfg_model["n_heads"],
                         drop_rate=cfg_model["drop_rate"],
+                        pad_token_id=PAD_ID,
+                        tie_weights=cfg_model.get("tie_weights", True),
+                        use_recency_bias=cfg_model.get("use_recency_bias", True),
+                        recency_decay=cfg_model.get("recency_decay", 0.9),
                         context_length=cfg_model["context_length"]
                     ).to(device)
 
@@ -311,11 +316,13 @@ def train_model(cfg: dict, verbose:bool):
 
     h0, c0 = None, None
     
-    for epoch in tqdm(range(start_epoch, epochs), total=epochs, desc="Training...", colour="orange"):
+    for epoch in range(start_epoch, epochs):
 
         total_loss = 0
 
-        for batch_idx, (input_batch, target_batch) in enumerate(train_dataloader):
+        for input_batch, target_batch in tqdm(train_dataloader, desc=f"epoch {epoch}", colour="green"):
+            input_batch = input_batch.to(device)
+            target_batch = target_batch.to(device)
 
             #target_batch = target_batch[:, -1].unsqueeze(1)
         
@@ -386,7 +393,7 @@ def train_model(cfg: dict, verbose:bool):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train a LARA model using CV')
-    parser.add_argument('-s', '--source', type=str, default=None,
+    parser.add_argument('-s', '--source', type=str, default='dressipi',
                         help='Choose a source. Available options are `dressipi`, `trivago` and `spotify`')
     
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
