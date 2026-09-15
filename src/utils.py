@@ -114,6 +114,8 @@ def build_model_name(cfg_model: dict, cfg_hyperparam: dict) -> str:
     lr_str = f"{lr:.0e}".replace("e-0", "e-").replace("e+0", "e")
     loss_tag = "adas" if cfg_hyperparam.get("use_adaptive_softmax", False) else "ce"
     meta_tag = "_meta" if cfg_model.get("use_meta_embeddings", False) else ""
+    tie_weights_tag = "_tie" if cfg_model.get("tie_weights", False) else ""
+
     return (
         f"{cfg_model['name']}"
         f"_emb{cfg_model['emb_dim']}"
@@ -122,8 +124,7 @@ def build_model_name(cfg_model: dict, cfg_hyperparam: dict) -> str:
         f"_ctx{cfg_model['context_length']}"
         f"_dr{cfg_model['drop_rate']}"
         f"_lr{lr_str}"
-        f"_bs{cfg_hyperparam['batch_size']}"
-        f"_ep{cfg_hyperparam['num_epochs']}"
+        f"{tie_weights_tag}"
         f"_{loss_tag}"
         f"{meta_tag}"
         f".pth"

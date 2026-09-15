@@ -1,5 +1,6 @@
 import math
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import warnings
 import argparse
 from pathlib import Path
@@ -13,7 +14,7 @@ from torch.utils.data import DataLoader , random_split
 from custom_collate import collate_fn
 from functools import partial
 #from data_setup import create_dataloaders
-from utils import set_seed, load_config, save_model, build_model_name
+from utils import EarlyStopping, set_seed, load_config, save_model, build_model_name
 from torchinfo import summary
 from tokenizer import get_tokenizer
 from tokenizers import Tokenizer
@@ -43,6 +44,16 @@ def load_data(file_path: str,  tokenizer: Tokenizer, validation_ratio: float=0.1
     return train_ds, val_ds
 
 
+def make_scheduler(optimizer, warmup_steps: int, total_steps: int, min_ratio: float = 0.05):
+    """Linear warmup then cosine decay to ``min_ratio`` of the base LR."""
+
+    def lr_lambda(step: int) -> float:
+        if step < warmup_steps:
+            return step / max(1, warmup_steps)
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return max(min_ratio, 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress))))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 
@@ -166,7 +177,7 @@ def evaluate_ranking_metrics(model: torch.nn.Module,
         f"ndcg_{k}": ndcg,
     }
 
-def train_model(cfg: dict, verbose:bool):
+def train_model(cfg: dict, eval_k: int, verbose: bool):
 
     mp.set_start_method('spawn', force=True)
 
@@ -214,10 +225,11 @@ def train_model(cfg: dict, verbose:bool):
     cfg_model["item_meta_id_map"] = cfg_data["item_meta_id_map"]
 
     model_filename = build_model_name(cfg_model, cfg_hyperparam)
+    model_filename_checkpoint = build_model_name(cfg_model, cfg_hyperparam).replace(".pth", "_checkpoint.pth")
+    
+    
+    checkpoint_path = Path(cfg_model["folder"], model_filename_checkpoint)
 
-    checkpoint_path = Path(cfg_model["folder"]
-                         , model_filename.replace(".pth", "_checkpoint.pth"))
-  
     epochs=cfg_hyperparam["num_epochs"]
     evaluation_frequency=cfg_hyperparam["evaluation_frequency"]
     evaluation_num_batches= None #cfg_hyperparam["evaluation_num_batches"]
@@ -295,6 +307,14 @@ def train_model(cfg: dict, verbose:bool):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer, T_0=20
         )
+    
+    total_steps = epochs * len(train_dataloader)
+    scheduler = make_scheduler(optimizer, cfg_hyperparam.get("warmup_steps", 0), total_steps)
+    
+    label_smoothing = cfg_hyperparam.get("label_smoothing", 0.0)
+    max_grad_norm = cfg_hyperparam.get("max_grad_norm", 1.0)
+    
+    stopper = EarlyStopping(patience=cfg_hyperparam.get("patience", 5), delta=0.0)
 
     start_epoch = 0
     best_loss = float('inf')
@@ -316,9 +336,18 @@ def train_model(cfg: dict, verbose:bool):
 
     h0, c0 = None, None
     
+    best_ndcg = -1.0
+    
+    print(f"label_smoothing={label_smoothing}  weight_decay={cfg_hyperparam['weight_decay']}  "
+            f"lr={cfg_hyperparam['learning_rate']}  warmup={cfg_hyperparam.get('warmup_steps', 0)}  "
+            f"total_steps={total_steps}  early-stop on val NDCG@{eval_k}")
+    
+    
+    
     for epoch in range(start_epoch, epochs):
 
         total_loss = 0
+        running = 0.0
 
         for input_batch, target_batch in tqdm(train_dataloader, desc=f"epoch {epoch}", colour="green"):
             input_batch = input_batch.to(device)
@@ -337,9 +366,6 @@ def train_model(cfg: dict, verbose:bool):
 
 
             loss.backward()
-
-
-            
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             optimizer.step()
             scheduler.step()
@@ -362,30 +388,43 @@ def train_model(cfg: dict, verbose:bool):
                 #if run is not None:
                 #    run.log({"train/train_loss": train_loss, "val/val_loss": val_loss})
 
-        if verbose: 
-            val_ranking_metrics = evaluate_ranking_metrics(
-                            model, val_dataloader, tokenizer, device, k=10,
-                        )
-            
+
+        val_ranking_metrics = evaluate_ranking_metrics(
+                        model, val_dataloader, tokenizer, device, k=eval_k,
+                    )
+        
+        if verbose:    
             print(f"Ep {epoch+1} (Step {global_step}): "
                 f"Train loss {train_loss:.3f}, Val loss {val_loss:.3f}, Total loss {total_loss:.3f}, "
-                f"Val HR@10 {val_ranking_metrics['hr_10']:.3f}, Val MRR@10 {val_ranking_metrics['mrr_10']:.3f}, "
-                f"Val Precision@10 {val_ranking_metrics['precision_10']:.3f}, Val Recall@10 {val_ranking_metrics['recall_10']:.3f}, "
-                f"Val MAP@10 {val_ranking_metrics['map_10']:.3f}, Val NDCG@10 {val_ranking_metrics['ndcg_10']:.3f}, "
+                f"Val HR@{eval_k} {val_ranking_metrics[f'hr_{eval_k}']:.3f}, Val MRR@{eval_k} {val_ranking_metrics[f'mrr_{eval_k}']:.3f}, "
+                f"Val Precision@{eval_k} {val_ranking_metrics[f'precision_{eval_k}']:.3f}, Val Recall@{eval_k} {val_ranking_metrics[f'recall_{eval_k}']:.3f}, "
+                f"Val MAP@{eval_k} {val_ranking_metrics[f'map_{eval_k}']:.3f}, Val NDCG@{eval_k} {val_ranking_metrics[f'ndcg_{eval_k}']:.3f}, "
                 f"LR {scheduler.get_last_lr()[0]:.2e}")
 
-        checkpoint = {
-            'epoch': epoch + 1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
-            'loss': loss.item(),
-        }
-        torch.save(checkpoint, checkpoint_path)
-        print(f"Checkpoint saved at epoch {epoch} to {checkpoint_path}")
+        
+        
+        # EarlyStopping treats its arg as a loss (lower = better) → pass -NDCG.
+        stopper(-val_ranking_metrics[f"ndcg_{eval_k}"], model)
+        if val_ranking_metrics[f"ndcg_{eval_k}"] > best_ndcg:
+            best_ndcg = val_ranking_metrics[f"ndcg_{eval_k}"]
+
+            checkpoint = {
+                        'epoch': epoch + 1,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'loss': loss.item(),
+                    }
+            
+            torch.save(checkpoint, checkpoint_path)
+            print(f"  ↳ new best, saved → {checkpoint_path}  (NDCG@{eval_k}={best_ndcg:.4f})")
+
+        if stopper.early_stop:
+            print(f"early stopping at epoch {epoch}")
+            break
 
 
-
+    print(f"done. best val NDCG@{args.eval_k}={best_ndcg:.4f}  weights → {checkpoint_path}")
     # Save the model with help from utils.py
     save_model(model=model,
                     target_dir=cfg_model["folder"],
@@ -398,12 +437,15 @@ if __name__ == "__main__":
     
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
                         help='Enable verbose output.')
+    
+    
+    parser.add_argument("--eval-k", type=int, default=20)
 
 
 
     args = parser.parse_args()
 
-    assert(args.source in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`")
+    #assert(args.source not in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`")
 
     cfg =None
     if args.source == 'dressipi':
@@ -416,4 +458,4 @@ if __name__ == "__main__":
     cfg['source']=args.source
 
 
-    train_model(cfg=cfg, verbose=args.verbose)
+    train_model(cfg=cfg, eval_k=args.eval_k, verbose=args.verbose)

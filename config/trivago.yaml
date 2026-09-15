@@ -29,13 +29,17 @@ model:
   n_layers: 1             # Number of layers
   drop_rate: 0.23          # Dropout rate
   qkv_bias: false         # Query-Key-Value bias
-  name: "trivago-lara"   # Model name LSTM Attention Recommender Architecture
+  name: "lara"   # Model name LSTM Attention Recommender Architecture
   folder: "models"        # Model folder
   model_type: "lstm"       # Model type
   cutoffs: [100, 1000, 9000] # Cutoffs for Adaptive Softmax (must all be < items_size)
   div_value: 4            # Div value for Adaptive Softmax
   use_meta_embeddings: false   # Add pretrained item metadata embeddings to token embeddings
   freeze_meta_embeddings: true # Keep metadata embeddings fixed during Transformer training
+  tie_weights: true # Tie weights between input and output embeddings
+  use_recency_bias : false # Whether to use recency bias in the model. If true, the model will learn a recency bias vector that is added to the output logits. This can help the model to better capture the recency effect in user behavior.
+  recency_decay: 0.9 # Decay factor for recency bias. Only used if use_recency_bias is true. The recency bias vector is updated as follows: recency_bias = recency_decay * recency_bias + (1 - recency_decay) * new_recency_bias, where new_recency_bias is the recency bias computed from the current batch of data.
+
 
 
 # Hyperparameters
