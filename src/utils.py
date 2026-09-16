@@ -2,11 +2,13 @@
 Contains various utility functions for PyTorch model training, load config and saving.
 """
 import os
+import math
 from pathlib import Path
 import yaml
 import random
 import numpy as np
 import torch
+
 
 
 def check_folder(path, point_allowed_path=False):
@@ -185,3 +187,16 @@ class EarlyStopping:
 
     def load_best_model(self, model):
         model.load_state_dict(self.best_model_state)
+
+
+
+def make_scheduler(optimizer, warmup_steps: int, total_steps: int, min_ratio: float = 0.05):
+    """Linear warmup then cosine decay to ``min_ratio`` of the base LR."""
+
+    def lr_lambda(step: int) -> float:
+        if step < warmup_steps:
+            return step / max(1, warmup_steps)
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return max(min_ratio, 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress))))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)

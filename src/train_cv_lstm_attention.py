@@ -1,5 +1,5 @@
-import math
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import warnings
 import argparse
 from pathlib import Path
@@ -7,13 +7,13 @@ import torch
 import numpy as np
 from tqdm.auto import tqdm
 from typing import Dict, List, Tuple
-from lstm import LSTMAttentionModel
+from lstm import LSTMAttentionRec
 from dataset import ItemDataset
 from torch.utils.data import DataLoader , random_split
 from custom_collate import collate_fn
 from functools import partial
 #from data_setup import create_dataloaders
-from utils import set_seed, load_config, save_model, build_model_name, EarlyStopping
+from utils import set_seed, load_config, save_model, build_model_name, EarlyStopping, make_scheduler
 from torchinfo import summary
 from tokenizer import get_tokenizer
 from tokenizers import Tokenizer
@@ -128,7 +128,7 @@ def evaluate_ranking_metrics(model: torch.nn.Module,
                              val_dataloader: torch.utils.data.DataLoader,
                              tokenizer: Tokenizer,
                              device: torch.device,
-                             k: int = 10) -> Dict[str, float]:
+                             k: int = 20) -> Dict[str, float]:
     """Aggregates validation batch predictions and scores them with metrics.py,
     mirroring the evaluation logic in evaluation.py."""
     model.eval()
@@ -175,7 +175,7 @@ def evaluate_ranking_metrics(model: torch.nn.Module,
         f"ndcg_{k}": ndcg,
     }
 
-def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
+def train_cv(cfg: dict, track_experiment: bool, eval_k: int, verbose:bool):
 
     mp.set_start_method('spawn', force=True)
     
@@ -215,6 +215,7 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
     
     # Load tokenizers
     tokenizer = get_tokenizer(tokenizer_path=tokenizer_path)
+    PAD_ID = tokenizer.token_to_id("[PAD]")
 
     seq_len = cfg_model["context_length"]
     batch_size = cfg_hyperparam["batch_size"]
@@ -222,16 +223,8 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
     cfg_model["item_meta_embedding"] = cfg_data["item_meta_embedding"]
     cfg_model["item_meta_id_map"] = cfg_data["item_meta_id_map"]
 
-        
-    
-
-    
     model_filename = build_model_name(cfg_model, cfg_hyperparam)
     
-
-
-    
-
     # Load dataset
     dataset = load_data(file_path=file_path, tokenizer=tokenizer)
 
@@ -251,7 +244,7 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
     label_smoothing=cfg_hyperparam.get("label_smoothing", 0.1)
 
 
-    GROUP = cfg_experiment["group"] + wandb.util.generate_id()
+    #GROUP = cfg_experiment["group"] + wandb.util.generate_id()
 
     train_total_loss, val_total_loss = [], []
     # K-fold Cross Validation model evaluation
@@ -267,15 +260,19 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
                     #model = model_builder.GPTAdaSoftmaxModel(cfg_model, tokenizer=tokenizer).to(device)
         else:
             print("Using Linear Softmax")
-            model = LSTMAttentionModel(
-                embedded_dim=cfg_model["emb_dim"],
-                hidden_dim=cfg_model["hidden_dim"],
-                layer_dim=cfg_model["n_layers"],
-                items_size=cfg_model["items_size"],
-                n_head=cfg_model["n_heads"],
-                drop_rate=cfg_model["drop_rate"],
-                context_length=cfg_model["context_length"]
-            ).to(device)
+            model = LSTMAttentionRec(
+                            embedded_dim=cfg_model["emb_dim"],
+                            hidden_dim=cfg_model["hidden_dim"],
+                            n_layers=cfg_model["n_layers"],
+                            items_size=cfg_model["items_size"],
+                            n_heads=cfg_model["n_heads"],
+                            drop_rate=cfg_model["drop_rate"],
+                            pad_token_id=PAD_ID,
+                            tie_weights=cfg_model.get("tie_weights", True),
+                            use_recency_bias=cfg_model.get("use_recency_bias", True),
+                            recency_decay=cfg_model.get("recency_decay", 0.9),
+                            context_length=cfg_model["context_length"]
+                        ).to(device)
     
         
         
@@ -292,9 +289,11 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
             raise ValueError(f"Unsupported optimizer: {cfg_hyperparam['optimizer']}")
     
     
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                optimizer, T_0=20
-            )
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        #         optimizer, T_0=20
+        #     )
+        
+        
 
 
         # config file to save in wandb
@@ -370,6 +369,16 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
 
         start_epoch = 0
         best_loss = float('inf')
+        stopper = EarlyStopping(patience=cfg_hyperparam.get("patience", 5), delta=0.0)
+        total_steps = epochs * len(train_dataloader)
+        scheduler = make_scheduler(optimizer, cfg_hyperparam.get("warmup_steps", 0), total_steps)
+        
+        best_ndcg = -1.0
+            
+        print(f"label_smoothing={label_smoothing}  weight_decay={cfg_hyperparam['weight_decay']}  "
+                f"lr={cfg_hyperparam['learning_rate']}  warmup={cfg_hyperparam.get('warmup_steps', 0)}  "
+                f"total_steps={total_steps}  early-stop on val NDCG@{eval_k}")
+            
 
         model.apply(reset_weights)
         if os.path.exists(checkpoint_path):
@@ -378,6 +387,7 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint['epoch']
             best_loss = checkpoint['loss']
+            best_ndcg = checkpoint['ndcg']
             if 'scheduler_state_dict' in checkpoint:
                 scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             print(f"Checkpoint loaded. Resuming training from epoch {start_epoch}")
@@ -390,11 +400,11 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
 
         h0, c0 = None, None
         
-        for epoch in tqdm(range(start_epoch, epochs), total=epochs, desc="Training...", colour="orange"):
+        for epoch in range(start_epoch, epochs):
 
             total_loss = 0
 
-            for batch_idx, (input_batch, target_batch) in enumerate(train_dataloader):
+            for input_batch, target_batch in tqdm(train_dataloader, desc=f"epoch {epoch}", colour="orange"):
 
                 #target_batch = target_batch[:, -1].unsqueeze(1)
             
@@ -406,7 +416,6 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
                     use_adaptive_softmax=use_adaptive_softmax,
                     label_smoothing=label_smoothing,
                 )
-
 
                 loss.backward()
 
@@ -432,44 +441,51 @@ def train_cv(cfg: dict, track_experiment: bool, verbose:bool):
             losses.append(total_loss)
 
             val_ranking_metrics = evaluate_ranking_metrics(
-                model, val_dataloader, tokenizer, device, k=10,
+                model, val_dataloader, tokenizer, device, k=eval_k,
             )
+            
+            print("BUG:" + str(val_ranking_metrics))
 
             if track_experiment: 
                 run.log({
                     "epoch": (epoch+1),
                     "train/train_loss": train_loss,
-                    "val/loss": val_loss,
-                    "val/hr_10": val_ranking_metrics["hr_10"],
-                    "val/mrr_10": val_ranking_metrics["mrr_10"],
-                    "val/precision_10": val_ranking_metrics["precision_10"],
-                    "val/recall_10": val_ranking_metrics["recall_10"],
-                    "val/map_10": val_ranking_metrics["map_10"],
-                    "val/ndcg_10": val_ranking_metrics["ndcg_10"],
+                    f"val/loss": val_loss,
+                    f"val/hr_{eval_k}": val_ranking_metrics[f"hr_{eval_k}"],
+                    f"val/mrr_{eval_k}": val_ranking_metrics[f"mrr_{eval_k}"],
+                    f"val/precision_{eval_k}": val_ranking_metrics[f"precision_{eval_k}"],
+                    f"val/recall_{eval_k}": val_ranking_metrics[f"recall_{eval_k}"],
+                    f"val/map_{eval_k}": val_ranking_metrics[f"map_{eval_k}"],
+                    f"val/ndcg_{eval_k}": val_ranking_metrics[f"ndcg_{eval_k}"],
                 })
 
-            if verbose: 
+            if verbose:    
                 print(f"Ep {epoch+1} (Step {global_step}): "
                     f"Train loss {train_loss:.3f}, Val loss {val_loss:.3f}, Total loss {total_loss:.3f}, "
-                    f"Val HR@10 {val_ranking_metrics['hr_10']:.3f}, Val MRR@10 {val_ranking_metrics['mrr_10']:.3f}, "
-                    f"Val Precision@10 {val_ranking_metrics['precision_10']:.3f}, Val Recall@10 {val_ranking_metrics['recall_10']:.3f}, "
-                    f"Val MAP@10 {val_ranking_metrics['map_10']:.3f}, Val NDCG@10 {val_ranking_metrics['ndcg_10']:.3f}, "
+                    f"Val HR@{eval_k} {val_ranking_metrics[f'hr_{eval_k}']:.3f}, Val MRR@{eval_k} {val_ranking_metrics[f'mrr_{eval_k}']:.3f}, "
+                    f"Val Precision@{eval_k} {val_ranking_metrics[f'precision_{eval_k}']:.3f}, Val Recall@{eval_k} {val_ranking_metrics[f'recall_{eval_k}']:.3f}, "
+                    f"Val MAP@{eval_k} {val_ranking_metrics[f'map_{eval_k}']:.3f}, Val NDCG@{eval_k} {val_ranking_metrics[f'ndcg_{eval_k}']:.3f}, "
                     f"LR {scheduler.get_last_lr()[0]:.2e}")
 
-            early_stopping(val_loss, model)
-            if early_stopping.early_stop:
-                print("Early stopping. Best val loss: {:.3f}".format(early_stopping.best_score))
-                break
+            # EarlyStopping treats its arg as a loss (lower = better) → pass -NDCG.
+            stopper(-val_ranking_metrics[f"ndcg_{eval_k}"], model)
+            if val_ranking_metrics[f"ndcg_{eval_k}"] > best_ndcg:
+                best_ndcg = val_ranking_metrics[f"ndcg_{eval_k}"]
+    
+                checkpoint = {
+                            'epoch': epoch + 1,
+                            'model_state_dict': model.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'scheduler_state_dict': scheduler.state_dict(),
+                            'loss': loss.item(),
+                            'ndcg': best_ndcg,
+                        }
+                
+                torch.save(checkpoint, checkpoint_path)
+                print(f"  ↳ new best, saved → {checkpoint_path}  (NDCG@{eval_k}={best_ndcg:.4f})")
 
-            checkpoint = {
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'loss': loss.item(),
-            }
-            torch.save(checkpoint, checkpoint_path)
-            print(f"Checkpoint saved at epoch {epoch} to {checkpoint_path}")
+            
+            
 
         # Finish the run and upload any remaining data.
         if track_experiment: 
@@ -485,10 +501,12 @@ if __name__ == "__main__":
                             help='Enable the weights and biases tracking experiment.')
     parser.add_argument('-v', '--verbose', action='store_true', default=True,
                         help='Enable verbose output.')
+    
+    parser.add_argument('-k', '--eval-k', type=int, default=20)
 
     args = parser.parse_args()
 
-    assert(args.source in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`")
+    assert args.source in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`"
 
     cfg =None
     if args.source == 'dressipi':
@@ -501,4 +519,4 @@ if __name__ == "__main__":
     cfg['source']=args.source
 
 
-    train_cv(cfg=cfg, track_experiment=args.wandb, verbose=args.verbose)
+    train_cv(cfg=cfg, track_experiment=args.wandb, eval_k=args.eval_k, verbose=args.verbose)
