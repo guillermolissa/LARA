@@ -1,4 +1,3 @@
-import math
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import warnings
@@ -14,7 +13,7 @@ from torch.utils.data import DataLoader , random_split
 from custom_collate import collate_fn
 from functools import partial
 #from data_setup import create_dataloaders
-from utils import EarlyStopping, set_seed, load_config, save_model, build_model_name
+from utils import EarlyStopping, make_scheduler, set_seed, load_config, save_model, build_model_name
 from torchinfo import summary
 from tokenizer import get_tokenizer
 from tokenizers import Tokenizer
@@ -42,18 +41,6 @@ def load_data(file_path: str,  tokenizer: Tokenizer, validation_ratio: float=0.1
     print(f"Validation dataset size: {len(val_ds)}")
     
     return train_ds, val_ds
-
-
-def make_scheduler(optimizer, warmup_steps: int, total_steps: int, min_ratio: float = 0.05):
-    """Linear warmup then cosine decay to ``min_ratio`` of the base LR."""
-
-    def lr_lambda(step: int) -> float:
-        if step < warmup_steps:
-            return step / max(1, warmup_steps)
-        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-        return max(min_ratio, 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress))))
-
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 
@@ -130,7 +117,7 @@ def evaluate_ranking_metrics(model: torch.nn.Module,
                              val_dataloader: torch.utils.data.DataLoader,
                              tokenizer: Tokenizer,
                              device: torch.device,
-                             k: int = 10) -> Dict[str, float]:
+                             k: int = 20) -> Dict[str, float]:
     """Aggregates validation batch predictions and scores them with metrics.py,
     mirroring the evaluation logic in evaluation.py."""
     model.eval()
@@ -304,9 +291,9 @@ def train_model(cfg: dict, eval_k: int, verbose: bool):
         raise ValueError(f"Unsupported optimizer: {cfg_hyperparam['optimizer']}")
 
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=20
-        )
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    #         optimizer, T_0=20
+    #     )
     
     total_steps = epochs * len(train_dataloader)
     scheduler = make_scheduler(optimizer, cfg_hyperparam.get("warmup_steps", 0), total_steps)
@@ -318,13 +305,21 @@ def train_model(cfg: dict, eval_k: int, verbose: bool):
 
     start_epoch = 0
     best_loss = float('inf')
-
+    best_ndcg = -1.0
+    
+    
+    print(f"label_smoothing={label_smoothing}  weight_decay={cfg_hyperparam['weight_decay']}  "
+                f"lr={cfg_hyperparam['learning_rate']}  warmup={cfg_hyperparam.get('warmup_steps', 0)}  "
+                f"total_steps={total_steps}  early-stop on val NDCG@{eval_k}")
+    
+    
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch']
         best_loss = checkpoint['loss']
+        best_ndcg = checkpoint['ndcg']
         if 'scheduler_state_dict' in checkpoint:
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         print(f"Checkpoint loaded. Resuming training from epoch {start_epoch}")
@@ -335,13 +330,6 @@ def train_model(cfg: dict, eval_k: int, verbose: bool):
     global_step = -1
 
     h0, c0 = None, None
-    
-    best_ndcg = -1.0
-    
-    print(f"label_smoothing={label_smoothing}  weight_decay={cfg_hyperparam['weight_decay']}  "
-            f"lr={cfg_hyperparam['learning_rate']}  warmup={cfg_hyperparam.get('warmup_steps', 0)}  "
-            f"total_steps={total_steps}  early-stop on val NDCG@{eval_k}")
-    
     
     
     for epoch in range(start_epoch, epochs):
@@ -414,6 +402,7 @@ def train_model(cfg: dict, eval_k: int, verbose: bool):
                         'optimizer_state_dict': optimizer.state_dict(),
                         'scheduler_state_dict': scheduler.state_dict(),
                         'loss': loss.item(),
+                        'ndcg': best_ndcg,
                     }
             
             torch.save(checkpoint, checkpoint_path)
@@ -439,13 +428,13 @@ if __name__ == "__main__":
                         help='Enable verbose output.')
     
     
-    parser.add_argument("--eval-k", type=int, default=20)
+    parser.add_argument('-k', '--eval-k', type=int, default=20)
 
 
 
     args = parser.parse_args()
 
-    #assert(args.source not in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`")
+    assert args.source not in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`"
 
     cfg =None
     if args.source == 'dressipi':
