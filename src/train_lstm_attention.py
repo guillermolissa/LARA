@@ -434,7 +434,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    assert args.source not in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`"
+    assert args.source in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`"
 
     cfg =None
     if args.source == 'dressipi':
