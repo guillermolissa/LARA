@@ -17,7 +17,7 @@ def get_metric_functions(module):
     return [getattr(module, name) for name in dir(module)
             if callable(getattr(module, name)) and not name.startswith("_")]
 
-def evaluate(input_file: str = None, dynamic_target_length: bool = False):
+def evaluate(input_file_path: str = None, dynamic_target_length: bool = False):
 
      # Load configuration
     print("Loading configuration")
@@ -29,18 +29,21 @@ def evaluate(input_file: str = None, dynamic_target_length: bool = False):
     cfg_experiment = cfg["experiment"]
 
     # Resolve input file: use provided name or default to the inference output filename
-    if input_file is None:
+    if input_file_path is None:
         model_stem = build_model_name(cfg_model, cfg_hyperparam).replace(".pth", "")
         dtl_tag = "dyn" if dynamic_target_length else "fixed"
         resolved_name = f"submit-{model_stem}-{cfg_experiment['run_id']}-{dtl_tag}.parquet"
+        file_name == f"submit-{model_stem}-{cfg_experiment['run_id']}-{dtl_tag}"
         print(f"No file specified — using inference output: {resolved_name}")
+        input_file_path = Path(cfg_data["submission_dir"], resolved_name)
     else:
-        resolved_name = f"{input_file.rsplit('.', 1)[0]}.parquet"
+        file_name = f"{input_file_path.rsplit("/", 1)[-1].rsplit('.', 1)[0]}"
+        input_file_path = Path(input_file_path)
 
     print("Loading data")
     # Load parquet file
-    input_file_path = Path(cfg_data["submission_dir"], resolved_name)
-    output_file_path = Path(cfg_data["submission_dir"], "metrics.csv")
+    
+    output_file_path = Path("outputs", "metrics.csv")
 
     if not input_file_path.exists():
         raise FileNotFoundError(f"Submission file not found: {input_file_path}")
@@ -52,7 +55,7 @@ def evaluate(input_file: str = None, dynamic_target_length: bool = False):
 
     print(f"Found {len(metric_functions)} metric functions in metrics.py")
     # Apply each metric and store results
-    results = {"file_name": resolved_name, "datetime": time.strftime("%Y-%m-%d %H:%M:%S")}
+    results = {"file_name": file_name, "datetime": time.strftime("%Y-%m-%d %H:%M:%S")}
     
     for funk in metric_functions:
         try:
@@ -92,11 +95,11 @@ def evaluate(input_file: str = None, dynamic_target_length: bool = False):
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Evaluate model predictions.')
-    parser.add_argument('-f', '--file_name', type=str, default=None,
+    parser.add_argument('-f', '--file_path', type=str, default=None,
                         help='Submission file to evaluate (parquet). Defaults to the inference output file derived from config.')
     parser.add_argument('-dtl', '--dynamic_target_length', action='store_true', default=False,
                         help='Must match the flag used during inference to resolve the correct default filename.')
 
     args = parser.parse_args()
 
-    evaluate(args.file_name, dynamic_target_length=args.dynamic_target_length)
+    evaluate(args.file_path, dynamic_target_length=args.dynamic_target_length)
