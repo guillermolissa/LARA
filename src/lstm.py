@@ -6,7 +6,7 @@ import json
 import torch.nn.functional as F
 
 def _build_meta_embedding(
-    cfg: dict,
+    emb_dim: int,
     tokenizer,
     emb_path: str,
     id_map_path: str,
@@ -24,11 +24,11 @@ def _build_meta_embedding(
         tok_to_meta LongTensor   [vocab_size]  — registered as a buffer
     """
     pretrained = torch.load(emb_path, map_location="cpu", weights_only=True)
-    num_items, emb_dim = pretrained.shape
+    num_items, pretrained_dim = pretrained.shape
 
-    assert emb_dim == cfg["emb_dim"], (
-        f"Metadata embedding dim ({emb_dim}) != model emb_dim ({cfg['emb_dim']}). "
-        f"Re-run build_item_embeddings.py with --embed_dim {cfg['emb_dim']}."
+    assert pretrained_dim == emb_dim, (
+        f"Metadata embedding dim ({pretrained_dim}) != model emb_dim ({emb_dim}). "
+        f"Re-run build_item_embeddings.py with --embed_dim {emb_dim}."
     )
 
     # Row 0 = zero padding; rows 1..N = pretrained embeddings (1-based shift)
@@ -348,7 +348,7 @@ class LSTMAttentionMetaEmbModel(nn.Module):
 
   def __init__(self, cfg, tokenizer=None):
 
-    super(LSTMAttentionModel, self).__init__()
+    super(LSTMAttentionMetaEmbModel, self).__init__()
 
     self.drop_rate = cfg["drop_rate"] 
     self.hidden_dim = cfg["hidden_dim"]
@@ -368,7 +368,7 @@ class LSTMAttentionMetaEmbModel(nn.Module):
     if self.use_meta:
         assert tokenizer is not None, "tokenizer required when use_meta_embeddings=true"
         meta_emb, tok_to_meta = _build_meta_embedding(
-            cfg, tokenizer,
+            cfg["emb_dim"], tokenizer,
             cfg["item_meta_embedding"],
             cfg["item_meta_id_map"],
         )
@@ -376,6 +376,10 @@ class LSTMAttentionMetaEmbModel(nn.Module):
         if cfg.get("freeze_meta_embeddings", True):
             self.meta_emb.weight.requires_grad_(False)
         self.register_buffer("tok_to_meta", tok_to_meta)
+        # Learned scalar gate, starts at 0 (no-op) — same trick used in
+        # LSTMAttentionRec (src/lstm_v2.py) so the content prior only
+        # contributes once training shows it helps.
+        self.meta_gate = nn.Parameter(torch.zeros(()))
 
 
     if self.layer_dim > 1:
@@ -423,6 +427,9 @@ class LSTMAttentionMetaEmbModel(nn.Module):
 
 
     embedded = self.embedding(x)
+    if self.use_meta:
+        meta = self.meta_emb(self.tok_to_meta[x])
+        embedded = embedded + self.meta_gate * meta
 
     lstm_out, (hn, cn) = self.lstm(embedded, (h0, c0))
     attended_out = self.attention(lstm_out)

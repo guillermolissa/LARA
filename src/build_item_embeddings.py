@@ -3,22 +3,37 @@ build_item_embeddings.py
 ------------------------
 Trains a self-supervised item embedding model from sparse item metadata
 (feature_category_id / feature_value_id pairs) and saves the resulting
-dense embedding matrix for use in a decoder-only Transformer recommender.
+dense embedding matrix for use as pretrained item content features in
+``LSTMAttentionRec`` (see ``src/lstm_v2.py``) or the LARA transformer.
 
 Architecture overview
 ---------------------
 1. For each item, every (category, value) pair is encoded as:
        feat_emb = cat_emb + val_emb   (element-wise sum, both R^d)
    Summing keeps the same output dimension while letting the model learn
-   which categories and values shift the representation.
+   which categories and values shift the representation. Features are
+   sorted by ``feature_category_id`` so every item presents its features
+   to the encoder in the same canonical order — required for the LSTM
+   below to see a consistent "position" per category across items, since
+   the raw CSV row order is arbitrary.
 
 2. All per-feature embeddings for one item are aggregated into a single
-   fixed-size vector via *attention-based pooling*: a single learnable
-   query attends over the feature sequence using multi-head attention.
-   This outperforms mean pooling because it lets the model up-weight
-   discriminative features (e.g. "category" matters more than "color")
-   and is robust to items from different product types having disjoint
-   feature sets.
+   fixed-size vector via an **LSTM + self-attention encoder**, the same
+   pattern ``LSTMAttentionRec`` uses for session sequences:
+       feat_emb  --BiLSTM-->  contextualised features
+                 --self-attention + residual + LayerNorm-->  refined features
+                 --attention pooling (learnable query)-->  item vector
+   The bidirectional LSTM lets each feature's representation absorb
+   context from every other feature of the item (e.g. "color=blue" reads
+   differently on a "category=shirt" item vs. a "category=shoes" item);
+   self-attention then lets features re-weigh each other directly/without
+   the LSTM's recency bias; only a final learnable-query attention pool
+   collapses the (variable-length, order-insensitive) feature set into a
+   fixed-size vector, so the arbitrary-but-consistent LSTM ordering never
+   leaks into the pooled output as a hard positional bias. This is a
+   deliberate step up from plain mean/attention pooling over raw feature
+   embeddings: it captures *interactions* between an item's features, not
+   just their (weighted) sum.
 
 3. Training objective — feature reconstruction (self-supervised):
    For every (category, value) pair in an item, the model is asked to
@@ -27,11 +42,13 @@ Architecture overview
    information to reconstruct all its features, yielding semantically
    rich dense representations without any session-level labels.
 
-Integration into Dressiformer
-------------------------------
+Integration into LSTMAttentionRec
+----------------------------------
 Load the saved embeddings at model initialisation:
-    meta_emb = nn.Embedding.from_pretrained(torch.load("item_meta_emb.pt"))
-Then combine with item-ID embeddings inside the Transformer input layer:
+    meta_emb = nn.Embedding.from_pretrained(torch.load("item_meta_embeddings.pt"))
+Then combine with item-ID embeddings inside the recurrent model's input
+layer (see ``use_meta_embeddings`` support added to ``LSTMAttentionRec``
+in ``src/lstm_v2.py``):
     token = id_emb(item_ids) + meta_emb(item_ids)
 The meta embedding acts as a content prior that biases ID embeddings
 toward semantically similar neighbours from the start of training.
@@ -69,7 +86,9 @@ class Config:
 
     # Model
     embed_dim: int = 128        # output embedding dimension (match Transformer d_model)
-    num_heads: int = 4          # attention heads in pooling layer
+    lstm_hidden_dim: int = 64   # per-direction LSTM hidden size (bidirectional -> 2x, projected back to embed_dim)
+    lstm_layers: int = 1        # number of stacked LSTM layers over the feature sequence
+    num_heads: int = 4          # attention heads (self-attention + pooling layers)
     dropout: float = 0.1
 
     # Training
@@ -120,6 +139,10 @@ def load_and_index(data_path: str) -> FeatureData:
 
     df["cat_idx"] = df["feature_category_id"].map(cat_to_idx)
     df["val_idx"] = df["feature_value_id"].map(val_to_idx)
+
+    # Canonical per-item ordering: the LSTM aggregator (see LSTMAttentionContextualizer)
+    # needs a consistent feature order across items — raw CSV row order is arbitrary.
+    df = df.sort_values(["item_id", "cat_idx"])
 
     item_features: Dict[int, Tuple[List[int], List[int]]] = {}
     for item_id, grp in df.groupby("item_id"):
@@ -238,6 +261,75 @@ class AttentionPooling(nn.Module):
         return self.norm(out.squeeze(1))                 # [B, d]
 
 
+class LSTMAttentionContextualizer(nn.Module):
+    """
+    Contextualises a variable-length feature sequence with a bidirectional
+    LSTM followed by self-attention — the same LSTM -> attention -> residual
+    -> LayerNorm block ``LSTMAttentionRec`` (src/lstm_v2.py) applies to
+    session sequences, reused here so each feature embedding absorbs
+    information from every other feature belonging to the same item before
+    pooling.
+
+    Unlike ``LSTMAttentionRec`` this is a *set* encoder, not autoregressive:
+    the LSTM is bidirectional and self-attention uses no causal mask, only
+    a key-padding mask, since there is no "future" to hide.
+    """
+
+    def __init__(
+        self,
+        embed_dim: int,
+        hidden_dim: int,
+        num_layers: int,
+        num_heads: int,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.lstm = nn.LSTM(
+            embed_dim,
+            hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        # Project the concatenated forward/backward hidden states back to embed_dim
+        # so the residual self-attention block below operates in the same space
+        # as the raw feature embeddings (mirrors LSTMAttentionRec's h2e tying trick).
+        self.proj = nn.Linear(2 * hidden_dim, embed_dim)
+
+        self.attn = nn.MultiheadAttention(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm = nn.LayerNorm(embed_dim)
+
+    def forward(
+        self,
+        feat_emb: torch.Tensor,          # [B, L, d]
+        lengths: torch.Tensor,           # [B]  real (non-padded) feature count
+        key_padding_mask: torch.Tensor,  # [B, L]  True = padding
+    ) -> torch.Tensor:                   # [B, L, d]
+        # pack/pad so the LSTM ignores padding positions entirely (no wasted
+        # compute, and padded rows can't leak zero-vectors into real states).
+        packed = nn.utils.rnn.pack_padded_sequence(
+            feat_emb, lengths.cpu(), batch_first=True, enforce_sorted=False
+        )
+        packed_out, _ = self.lstm(packed)
+        lstm_out, _ = nn.utils.rnn.pad_packed_sequence(
+            packed_out, batch_first=True, total_length=feat_emb.size(1)
+        )                                                    # [B, L, 2*hidden_dim]
+        lstm_out = self.proj(lstm_out)                        # [B, L, d]
+
+        attn_out, _ = self.attn(
+            lstm_out, lstm_out, lstm_out,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )                                                      # [B, L, d]
+        return self.norm(attn_out + lstm_out)                  # [B, L, d]
+
+
 class ItemMetaEncoder(nn.Module):
     """
     Encodes item metadata feature pairs (category_id, value_id) into a
@@ -254,6 +346,8 @@ class ItemMetaEncoder(nn.Module):
         num_categories: int,
         num_values: int,
         embed_dim: int,
+        lstm_hidden_dim: int = 64,
+        lstm_layers: int = 1,
         num_heads: int = 4,
         dropout: float = 0.1,
     ) -> None:
@@ -264,7 +358,13 @@ class ItemMetaEncoder(nn.Module):
         self.cat_emb = nn.Embedding(num_categories, embed_dim, padding_idx=0)
         self.val_emb = nn.Embedding(num_values, embed_dim, padding_idx=0)
 
-        # Aggregate per-feature embeddings → single item vector
+        # LSTM + self-attention: let features of the same item interact
+        # before they are pooled (see LSTMAttentionContextualizer docstring).
+        self.context = LSTMAttentionContextualizer(
+            embed_dim, lstm_hidden_dim, lstm_layers, num_heads, dropout
+        )
+
+        # Aggregate the contextualised per-feature embeddings → single item vector
         self.pool = AttentionPooling(embed_dim, num_heads, dropout)
 
         # Optional projection after pooling (adds expressivity)
@@ -295,6 +395,8 @@ class ItemMetaEncoder(nn.Module):
     ) -> torch.Tensor:                # [B, d]
         """Encode item features into a single dense vector."""
         feat_emb = self.cat_emb(cat_idxs) + self.val_emb(val_idxs)  # [B, L, d]
+        lengths = (~pad_mask).sum(dim=1)                              # [B]
+        feat_emb = self.context(feat_emb, lengths, pad_mask)          # [B, L, d]
         item_emb = self.pool(feat_emb, pad_mask)                      # [B, d]
         return self.proj(item_emb)                                    # [B, d]
 
@@ -398,6 +500,8 @@ def train(cfg: Config) -> None:
         num_categories=feature_data.num_categories,
         num_values=feature_data.num_values,
         embed_dim=cfg.embed_dim,
+        lstm_hidden_dim=cfg.lstm_hidden_dim,
+        lstm_layers=cfg.lstm_layers,
         num_heads=cfg.num_heads,
         dropout=cfg.dropout,
     ).to(device)
@@ -556,6 +660,8 @@ def parse_args() -> Config:
     parser.add_argument("--emb_file", default="item_meta_embeddings.pt")
     parser.add_argument("--map_file", default="item_id_to_index.json")
     parser.add_argument("--embed_dim", type=int, default=128)
+    parser.add_argument("--lstm_hidden_dim", type=int, default=64)
+    parser.add_argument("--lstm_layers", type=int, default=1)
     parser.add_argument("--num_heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--batch_size", type=int, default=512)
