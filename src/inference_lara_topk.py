@@ -1,12 +1,12 @@
 import os
 import torch
-from dataset import DressipiDataset
+from dataset import ItemDataset
 from torch.utils.data import DataLoader
 import torch.multiprocessing as mp
 from custom_collate import collate_fn
 from utils import set_seed, load_config, load_model, build_model_name
 from functools import partial
-from lstm import LSTMAttentionModel   # Adjust the import based on the actual location of LSTMModel
+from lstm import LSTMAttentionRec   # Adjust the import based on the actual location of LSTMModel
 from pathlib import Path
 from tokenizer import get_tokenizer
 from tokenizers import Tokenizer
@@ -65,9 +65,10 @@ def inference_topk(top_n: int, cfg, dynamic_target_length: bool = False):
 
     file_path = Path(cfg_data["test"], cfg_data["test_feature_store"].rsplit(".", 1)[0] + ".parquet")
     tokenizer = get_tokenizer(tokenizer_path=cfg_data["tokenizer_path"])
+    PAD_ID = tokenizer.token_to_id("[PAD]")
 
     print("Loading dataset...")
-    test_ds = DressipiDataset(file_path=file_path, tokenizer=tokenizer)
+    test_ds = ItemDataset(file_path=file_path, tokenizer=tokenizer)
     print(f"Test dataset size: {len(test_ds)}")
 
     seq_len = cfg_model["context_length"]
@@ -83,13 +84,17 @@ def inference_topk(top_n: int, cfg, dynamic_target_length: bool = False):
         #model = model_builder.GPTAdaSoftmaxModel(cfg_model, tokenizer=tokenizer).to(device)
     else:
         print("Using Linear Softmax")
-        model = LSTMAttentionModel(
+        model = LSTMAttentionRec(
                             embedded_dim=cfg_model["emb_dim"],
                             hidden_dim=cfg_model["hidden_dim"],
-                            layer_dim=cfg_model["n_layers"],
+                            n_layers=cfg_model["n_layers"],
                             items_size=cfg_model["items_size"],
-                            n_head=cfg_model["n_heads"],
+                            n_heads=cfg_model["n_heads"],
                             drop_rate=cfg_model["drop_rate"],
+                            pad_token_id=PAD_ID,
+                            tie_weights=cfg_model.get("tie_weights", True),
+                            use_recency_bias=cfg_model.get("use_recency_bias", True),
+                            recency_decay=cfg_model.get("recency_decay", 0.9),
                             context_length=cfg_model["context_length"]
                         ).to(device)
 
@@ -204,7 +209,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    assert(args.source in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`")
+    assert args.source in ['dressipi', 'trivago', 'spotify'], "Available options for source are `dressipi`, `trivago` and `spotify`"
     
     cfg =None
     if args.source == 'dressipi':
