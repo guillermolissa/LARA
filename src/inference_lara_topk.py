@@ -41,7 +41,7 @@ def predict_topk(model, input_batch: torch.Tensor, top_n: int, use_adaptive_soft
     return torch.topk(logits, k=top_n, dim=-1).indices    # (B, top_n)
 
 
-def inference_topk(top_n: int, cfg, dynamic_target_length: bool = False):
+def inference_topk(top_n: int, cfg: dict):
     print("Init top-k inference")
     print("Loading configuration")
     #cfg = load_config("config/config.yaml")
@@ -175,8 +175,7 @@ def inference_topk(top_n: int, cfg, dynamic_target_length: bool = False):
 
     df_output = pd.DataFrame(output_json)
     model_stem = build_model_name(cfg_model, cfg_hyperparam).replace(".pth", "")
-    dtl_tag = "dyn" if dynamic_target_length else "fixed"
-    output_file_path = Path(cfg_data["submission_dir"], f"submit-{model_stem}-{cfg_experiment['run_id']}-{dtl_tag}-topk.parquet")
+    output_file_path = Path(cfg_data["submission_dir"], cfg['source'] , f"{model_stem}-topk.parquet")
 
     print(f"Saving predictions to {output_file_path}")
     os.makedirs(cfg_data["submission_dir"], exist_ok=True)
@@ -202,10 +201,10 @@ if __name__ == "__main__":
         "-n", "--top_n", type=int, required=False, default=10,
         help="Number of top-scoring items to return per sequence. E.g.: 10",
     )
-    parser.add_argument(
-        "-dtl", "--dynamic_target_length", action="store_true", default=False,
-        help="If set, target length is dynamic based on the longest sequence in the batch.",
-    )
+    # parser.add_argument(
+    #     "-dtl", "--dynamic_target_length", action="store_true", default=False,
+    #     help="If set, target length is dynamic based on the longest sequence in the batch.",
+    # )
 
     args = parser.parse_args()
 
@@ -223,6 +222,5 @@ if __name__ == "__main__":
 
     inference_topk(
         top_n=args.top_n,
-        cfg=cfg,
-        dynamic_target_length=args.dynamic_target_length,
+        cfg=cfg
     )
