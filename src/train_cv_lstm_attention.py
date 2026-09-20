@@ -244,7 +244,7 @@ def train_cv(cfg: dict, track_experiment: bool, eval_k: int, verbose:bool):
     label_smoothing=cfg_hyperparam.get("label_smoothing", 0.1)
 
 
-    #GROUP = cfg_experiment["group"] + wandb.util.generate_id()
+    GROUP = cfg_experiment["group"] + wandb.util.generate_id()
 
     train_total_loss, val_total_loss = [], []
     # K-fold Cross Validation model evaluation
