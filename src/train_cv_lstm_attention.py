@@ -444,8 +444,6 @@ def train_cv(cfg: dict, track_experiment: bool, eval_k: int, verbose:bool):
                 model, val_dataloader, tokenizer, device, k=eval_k,
             )
             
-            print("BUG:" + str(val_ranking_metrics))
-
             if track_experiment: 
                 run.log({
                     "epoch": (epoch+1),
