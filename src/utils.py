@@ -120,10 +120,11 @@ def build_model_name(cfg_model: dict, cfg_hyperparam: dict) -> str:
 
     return (
         f"{cfg_model['name']}"
-        f"_emb{cfg_model['emb_dim']}"
-        f"_h{cfg_model['n_heads']}"
         f"_l{cfg_model['n_layers']}"
+        f"_h{cfg_model['n_heads']}"
         f"_ctx{cfg_model['context_length']}"
+        f"_emb{cfg_model['emb_dim']}"
+        f"_hid{cfg_model['hidden_dim']}"
         f"_dr{cfg_model['drop_rate']}"
         f"_lr{lr_str}"
         f"{tie_weights_tag}"
