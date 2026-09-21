@@ -18,6 +18,7 @@ from torchinfo import summary
 from tokenizer import get_tokenizer
 from tokenizers import Tokenizer
 import torch.multiprocessing as mp
+import wandb
 import metrics
 warnings.filterwarnings("ignore")  # To ignore user warnings
 
@@ -164,12 +165,15 @@ def evaluate_ranking_metrics(model: torch.nn.Module,
         f"ndcg_{k}": ndcg,
     }
 
-def train_model(cfg: dict, eval_k: int, verbose: bool):
+def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
 
     mp.set_start_method('spawn', force=True)
 
 
-    cfg_model, cfg_data, cfg_hyperparam = cfg["model"], cfg["data"], cfg["hyperparameters"]
+    cfg_model, cfg_data, cfg_hyperparam, cfg_experiment = cfg["model"], cfg["data"], cfg["hyperparameters"], cfg["experiment"]
+
+    # Set WandB API key
+    os.environ['WANDB_API_KEY'] = cfg_experiment["wandb_api_key"]
 
     validation_ratio = cfg_hyperparam["validation_ratio"]
     num_workers = cfg_hyperparam["num_workers"] if cfg_hyperparam["num_workers"] is not None else os.cpu_count()
@@ -225,6 +229,8 @@ def train_model(cfg: dict, eval_k: int, verbose: bool):
     warmup_steps=cfg_hyperparam.get("warmup_steps", 0)
     max_grad_norm=cfg_hyperparam.get("max_grad_norm", 1.0)
     label_smoothing=cfg_hyperparam.get("label_smoothing", 0.1)
+
+    GROUP = cfg_experiment["group"]
 
 
     customized_collate_fn = partial(
@@ -306,6 +312,36 @@ def train_model(cfg: dict, eval_k: int, verbose: bool):
     start_epoch = 0
     best_loss = float('inf')
     best_ndcg = -1.0
+
+    if track_experiment:
+        # config file to save in wandb
+        config = cfg_model | cfg_hyperparam
+        config["train_feature_store"]= cfg_data["train_feature_store"]
+    
+        if cfg_hyperparam["use_adaptive_softmax"]:
+            config["cutoffs"] = cfg_model["cutoffs"]
+            config["div_value"] = cfg_model["div_value"]
+            config["loss_fn"] = "AdaptiveSoftmaxLoss"
+        else:
+            config["loss_fn"] = "CrossEntropyLoss"
+            config["cutoffs"] = None
+            config["div_value"] = None
+    
+        config["model_name"] = model_filename 
+
+
+        run = wandb.init(entity=cfg_experiment["entity"], project=cfg_experiment["project"]
+                        #,id=cfg_experiment["run_id"]
+                        ,resume=cfg_experiment["resume"]
+                        ,group=GROUP
+                        , name=model_filename
+                        ,job_type="train"
+                        ,reinit=True, config=config)
+
+        print("RUN WANDB INFO\n")
+        print("ENTITY: ", cfg_experiment["entity"], " - PROJECT: ", cfg_experiment["project"] ," - GROUP: ", GROUP)
+
+
     
     
     print(f"label_smoothing={label_smoothing}  weight_decay={cfg_hyperparam['weight_decay']}  "
@@ -380,6 +416,19 @@ def train_model(cfg: dict, eval_k: int, verbose: bool):
         val_ranking_metrics = evaluate_ranking_metrics(
                         model, val_dataloader, tokenizer, device, k=eval_k,
                     )
+
+        if track_experiment: 
+            run.log({
+                "epoch": (epoch+1),
+                "train/train_loss": train_loss,
+                f"val/loss": val_loss,
+                f"val/hr_{eval_k}": val_ranking_metrics[f"hr_{eval_k}"],
+                f"val/mrr_{eval_k}": val_ranking_metrics[f"mrr_{eval_k}"],
+                f"val/precision_{eval_k}": val_ranking_metrics[f"precision_{eval_k}"],
+                f"val/recall_{eval_k}": val_ranking_metrics[f"recall_{eval_k}"],
+                f"val/map_{eval_k}": val_ranking_metrics[f"map_{eval_k}"],
+                f"val/ndcg_{eval_k}": val_ranking_metrics[f"ndcg_{eval_k}"],
+            })
         
         if verbose:    
             print(f"Ep {epoch+1} (Step {global_step}): "
@@ -412,6 +461,9 @@ def train_model(cfg: dict, eval_k: int, verbose: bool):
             print(f"early stopping at epoch {epoch}")
             break
 
+    # Finish the run and upload any remaining data.
+    if track_experiment: 
+        run.finish()
 
     print(f"done. best val NDCG@{args.eval_k}={best_ndcg:.4f}  weights → {checkpoint_path}")
     # Save the model with help from utils.py
@@ -423,6 +475,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train a LARA model using CV')
     parser.add_argument('-s', '--source', type=str, default='dressipi',
                         help='Choose a source. Available options are `dressipi`, `trivago` and `spotify`')
+    parser.add_argument('-wb', '--wandb', action='store_true', default=False,
+                                help='Enable the weights and biases tracking experiment.')
     
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
                         help='Enable verbose output.')
@@ -447,4 +501,4 @@ if __name__ == "__main__":
     cfg['source']=args.source
 
 
-    train_model(cfg=cfg, eval_k=args.eval_k, verbose=args.verbose)
+    train_model(cfg=cfg, track_experiment=args.wandb, eval_k=args.eval_k, verbose=args.verbose)
