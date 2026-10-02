@@ -6,8 +6,7 @@ import torch.multiprocessing as mp
 from custom_collate import collate_fn
 from utils import set_seed, load_config, load_model, build_model_name
 from functools import partial
-from lstm import LSTMAttentionRec   # Adjust the import based on the actual location of LSTMModel
-from lstm_meta import LSTMAttentionMetaEmbModel, load_meta_embedding
+from lstm import LSTMAttentionRec, LSTMAttentionMetaEmbModel, load_meta_embedding   # Adjust the import based on the actual location of LSTMModel
 from pathlib import Path
 from tokenizer import get_tokenizer
 from tokenizers import Tokenizer
