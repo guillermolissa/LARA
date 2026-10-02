@@ -7,6 +7,7 @@ from custom_collate import collate_fn
 from utils import set_seed, load_config, load_model, build_model_name
 from functools import partial
 from lstm import LSTMAttentionRec   # Adjust the import based on the actual location of LSTMModel
+from lstm_meta import LSTMAttentionMetaEmbModel, load_meta_embedding
 from pathlib import Path
 from tokenizer import get_tokenizer
 from tokenizers import Tokenizer
@@ -82,6 +83,31 @@ def inference_topk(top_n: int, cfg: dict):
     if use_adaptive_softmax:
         print("Using Adaptive Softmax")
         #model = model_builder.GPTAdaSoftmaxModel(cfg_model, tokenizer=tokenizer).to(device)
+    elif cfg_model['use_meta_embeddings']:
+        print("Using Meta Embeddings")
+        meta_emb, tok_to_meta = load_meta_embedding(
+                    root_dir=cfg_data["meta_embedding_path"],
+                    emb_dim=cfg_model["emb_dim"],
+                    n_heads=cfg_model["n_heads"],
+                    tokenizer=tokenizer,
+                    )
+        
+        model = LSTMAttentionMetaEmbModel(
+                        embedded_dim=cfg_model["emb_dim"],
+                        hidden_dim=cfg_model["hidden_dim"],
+                        n_layers=cfg_model["n_layers"],
+                        items_size=cfg_model["items_size"],
+                        n_heads=cfg_model["n_heads"],
+                        drop_rate=cfg_model["drop_rate"],
+                        pad_token_id=PAD_ID,
+                        tie_weights=cfg_model.get("tie_weights", True),
+                        use_recency_bias=cfg_model.get("use_recency_bias", True),
+                        recency_decay=cfg_model.get("recency_decay", 0.9),
+                        context_length=cfg_model["context_length"],
+                        meta_emb=meta_emb,
+                        tok_to_meta=tok_to_meta
+                    ).to(device)
+
     else:
         print("Using Linear Softmax")
         model = LSTMAttentionRec(

@@ -7,7 +7,7 @@ import torch
 import numpy as np
 from tqdm.auto import tqdm
 from typing import Dict, List, Tuple
-from lstm import LSTMAttentionRec
+from lstm import LSTMAttentionRec, LSTMAttentionMetaEmbModel, load_meta_embedding
 from dataset import ItemDataset
 from torch.utils.data import DataLoader , random_split
 from custom_collate import collate_fn
@@ -264,6 +264,34 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
     if cfg_hyperparam["use_adaptive_softmax"]:
         print("Using Adaptive Softmax")
         #model = model_builder.GPTAdaSoftmaxModel(cfg_model, tokenizer=tokenizer).to(device)
+    elif cfg_model['use_meta_embeddings']:
+        print("Using Linear Softmax with Meta Embeddings")
+        
+        meta_emb, tok_to_meta = load_meta_embedding(
+            root_dir=cfg_data["meta_embedding_path"],
+            emb_dim=cfg_model["emb_dim"],
+            n_heads=cfg_model["n_heads"],
+            tokenizer=tokenizer,
+            )
+
+        if cfg_model["freeze_meta_embeddings"]:
+            meta_emb.weight.requires_grad_(False)
+
+        model = LSTMAttentionMetaEmbModel(
+                        embedded_dim=cfg_model["emb_dim"],
+                        hidden_dim=cfg_model["hidden_dim"],
+                        n_layers=cfg_model["n_layers"],
+                        items_size=cfg_model["items_size"],
+                        n_heads=cfg_model["n_heads"],
+                        drop_rate=cfg_model["drop_rate"],
+                        pad_token_id=PAD_ID,
+                        tie_weights=cfg_model.get("tie_weights", True),
+                        use_recency_bias=cfg_model.get("use_recency_bias", True),
+                        recency_decay=cfg_model.get("recency_decay", 0.9),
+                        context_length=cfg_model["context_length"],
+                        meta_emb=meta_emb,
+                        tok_to_meta=tok_to_meta
+                    ).to(device)
     else:
         print("Using Linear Softmax")
         model = LSTMAttentionRec(
