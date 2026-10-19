@@ -8,24 +8,23 @@ data:
   min_session_length: 6 # Minimum session length to keep in the dataset after filtering low frequency items. Note: This is different from the context_length used in the model configuration which is the context length for the model.
   items_frequency: 5
   feature_store_dir: "data/train" # Directory for feature store
-  train_feature_store: "train_minseql3.parquet" # File name for the feature store
-  test_feature_store: "test_minseql3.parquet" # File name for the feature store
+  train_feature_store: "train.parquet" # File name for the feature store
+  test_feature_store: "test.parquet" # File name for the feature store
   sample: "data/sampled" # Path to the sampled data
   subset: "train" # Specify subset folder to be loaded. Allowed options are 'train' or 'test'. TODO: Change to 'test' for test set up
-  tokenizer_path: "data/tokenizer.json" #"data/custom_tokenizer.json"
-  tokenizer_build_path: "data/train/train_minseql3.parquet" # Path to data for building tokenizer
-  submission_dir: "data/submission" # Dir to save submission files
+  tokenizer_path: "data/tokenizer-dressipi.json" #"data/custom_tokenizer.json"
+  tokenizer_build_path: "data/train/train.parquet" # Path to data for building tokenizer
+  submission_dir: "submission" # Dir to save submission files
   train: "data/train" # Directory for training data
   test: "data/test" # Directory for test data
-  item_meta_embedding: "data/processed/item_meta_embeddings.pt"
-  item_meta_id_map: "data/processed/item_id_to_index.json"
+  meta_embedding_path: "data/meta" # Path to pretrained item metadata embeddings
   
 
 model:
   context_length: 10      # Context length
   emb_dim: 128            # Embedding dimension
   hidden_dim: 128         # Hidden dimension for LSTM
-  n_heads: 1              # Number of attention heads
+  n_heads: 2              # Number of attention heads
   n_layers: 1             # Number of layers
   drop_rate: 0.2          # Dropout rate
   qkv_bias: false         # Query-Key-Value bias
@@ -34,7 +33,7 @@ model:
   model_type: "lstm"       # Model type
   cutoffs: [100, 1000, 9000] # Cutoffs for Adaptive Softmax (must all be < items_size)
   div_value: 4            # Div value for Adaptive Softmax
-  use_meta_embeddings: false   # Add pretrained item metadata embeddings to token embeddings
+  use_meta_embeddings: true   # Add pretrained item metadata embeddings to token embeddings
   freeze_meta_embeddings: true # Keep metadata embeddings fixed during Transformer training
   tie_weights: true # Tie weights between input and output embeddings
   use_recency_bias : false # Whether to use recency bias in the model. If true, the model will learn a recency bias vector that is added to the output logits. This can help the model to better capture the recency effect in user behavior.
@@ -45,7 +44,7 @@ model:
 hyperparameters:
   batch_size: 128
   learning_rate: 0.0005
-  num_epochs: 3
+  num_epochs: 40
   kfold : 5
   warmup_steps: 100
   weight_decay: 0.20
@@ -57,7 +56,8 @@ hyperparameters:
   validation_ratio: 0.2
   device: "mps" # Options: 'cuda', 'mps' or 'cpu'
   num_workers: 0 # Number of workers for DataLoader
-  use_adaptive_softmax: False # Whether to use Adaptive Softmax
+  loss_fn: "linear_softmax" # Training objective for train_lstm_attention.py. ["linear_softmax" (cross-entropy), "adaptive_softmax", "bpr" (Bayesian Personalized Ranking)]
+  bpr_num_negatives: 1 # Number of negative samples for BPR loss. Only used if oss_fn is "bpr"
   optimizer: "AdamW" # Optimizer type ["SGD", "AdamW"]
   seed: 42
 

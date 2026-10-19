@@ -12,20 +12,21 @@ data:
   test_feature_store: "test.parquet" # File name for the feature store
   sample: "data/sampled" # Path to the sampled data
   subset: "train" # Specify subset folder to be loaded. Allowed options are 'train' or 'test'. TODO: Change to 'test' for test set up
-  tokenizer_path: "data/tokenizer.json" #"data/custom_tokenizer.json"
+  tokenizer_path: "data/tokenizer-trivago.json" #"data/custom_tokenizer.json"
   tokenizer_build_path: "data/train/train.parquet" # Path to data for building tokenizer
   submission_dir: "data/submission" # Dir to save submission files
   train: "data/train" # Directory for training data
   test: "data/test" # Directory for test data
-  item_meta_embedding: "data/processed/item_meta_embeddings.pt"
-  item_meta_id_map: "data/processed/item_id_to_index.json"
+  meta_embedding_path: "data/meta/trivago" # Path to pretrained item metadata embeddings
+  item_meta_embedding: "data/meta/item_meta_embeddings.pt"
+  item_meta_id_map: "data/meta/item_id_to_index.json"
   
 
 model:
   context_length: 10      # Context length
-  emb_dim: 64            # Embedding dimension
+  emb_dim: 128            # Embedding dimension
   hidden_dim: 128         # Hidden dimension for LSTM
-  n_heads: 1              # Number of attention heads
+  n_heads: 2              # Number of attention heads
   n_layers: 1             # Number of layers
   drop_rate: 0.23          # Dropout rate
   qkv_bias: false         # Query-Key-Value bias
@@ -34,7 +35,7 @@ model:
   model_type: "lstm"       # Model type
   cutoffs: [100, 1000, 9000] # Cutoffs for Adaptive Softmax (must all be < items_size)
   div_value: 4            # Div value for Adaptive Softmax
-  use_meta_embeddings: false   # Add pretrained item metadata embeddings to token embeddings
+  use_meta_embeddings: true   # Add pretrained item metadata embeddings to token embeddings
   freeze_meta_embeddings: true # Keep metadata embeddings fixed during Transformer training
   tie_weights: true # Tie weights between input and output embeddings
   use_recency_bias : false # Whether to use recency bias in the model. If true, the model will learn a recency bias vector that is added to the output logits. This can help the model to better capture the recency effect in user behavior.
@@ -56,9 +57,10 @@ hyperparameters:
   evaluation_frequency: 500
   evaluation_num_batches: 10
   validation_ratio: 0.2
-  device: "cuda" # Options: 'cuda', 'mps' or 'cpu'
+  device: "gpu" # Options: 'cuda', 'mps' or 'cpu'
   num_workers: 0 # Number of workers for DataLoader
-  use_adaptive_softmax: False # Whether to use Adaptive Softmax
+  loss_fn: "linear_softmax" # Training objective for train_lstm_attention.py. ["linear_softmax" (cross-entropy), "adaptive_softmax", "bpr" (Bayesian Personalized Ranking)]
+  bpr_num_negatives: 1 # Number of negative samples for BPR loss. Only used if oss_fn is "bpr"
   optimizer: "AdamW" # Optimizer type ["SGD", "AdamW"]
   seed: 42
 
@@ -68,7 +70,7 @@ experiment:
   entity: "<entity>" 
   project: "<project>"
   run_id: "<run ID>"
-  group: "experiment-"
+  group: "experiment-<group>"
   resume: "allow" # Options: 'must', 'allow' or 'never' source: https://docs.wandb.ai/models/runs/resuming
   notes: "Notes for the experiment"
 

@@ -45,8 +45,42 @@ def load_data(file_path: str,  tokenizer: Tokenizer, validation_ratio: float=0.1
 
 
 
+def bpr_loss(logits: torch.Tensor, target_batch: torch.Tensor,
+             num_negatives: int = 1, pad_token_id: int = 0) -> torch.Tensor:
+    """Bayesian Personalized Ranking loss.
+    
+    ref: https://medium.com/@mandeep0405/different-loss-methods-for-the-recommender-systems-e6a75de414a6
+
+    Samples `num_negatives` items at random per example and pushes the
+    positive (target) item's score above each sampled negative's score via
+    -log(sigmoid(pos_score - neg_score)), averaged over examples and negatives.
+    """
+    valid_mask = target_batch != -100
+    if valid_mask.sum() == 0:
+        return logits.sum() * 0.0
+
+    valid_logits = logits[valid_mask]          # (N, V)
+    valid_targets = target_batch[valid_mask]   # (N,)
+    vocab_size = valid_logits.size(-1)
+
+    neg_ids = torch.randint(0, vocab_size, (valid_logits.size(0), num_negatives),
+                             device=logits.device)
+    # Resample negatives that collide with the positive item or the pad token.
+    collision = (neg_ids == valid_targets.unsqueeze(1)) | (neg_ids == pad_token_id)
+    while collision.any():
+        neg_ids[collision] = torch.randint(0, vocab_size, (int(collision.sum()),),
+                                            device=logits.device)
+        collision = (neg_ids == valid_targets.unsqueeze(1)) | (neg_ids == pad_token_id)
+
+    pos_scores = valid_logits.gather(1, valid_targets.unsqueeze(1))  # (N, 1)
+    neg_scores = valid_logits.gather(1, neg_ids)                     # (N, num_negatives)
+
+    return -torch.nn.functional.logsigmoid(pos_scores - neg_scores).mean()
+
+
 def calc_loss_batch(input_batch, target_batch, model, device,
-                    use_adaptive_softmax=False, label_smoothing=0.0):
+                    use_adaptive_softmax=False, use_bpr=False, label_smoothing=0.0,
+                    bpr_num_negatives=1, pad_token_id=0):
     input_batch, target_batch = input_batch.to(device), target_batch.to(device)
 
     if use_adaptive_softmax:
@@ -56,17 +90,25 @@ def calc_loss_batch(input_batch, target_batch, model, device,
         # Only the last position is used at inference — train against the same target
         logits_last  = logits#[:, -1, :]       # (B, vocab_size)
         targets_last = target_batch#[:, -1]     # (B,)
-        loss = torch.nn.functional.cross_entropy(
-            logits_last, targets_last,
-            ignore_index=-100,
-            label_smoothing=label_smoothing,
-        )
+        if use_bpr:
+            loss = bpr_loss(
+                logits_last, targets_last,
+                num_negatives=bpr_num_negatives,
+                pad_token_id=pad_token_id,
+            )
+        else:
+            loss = torch.nn.functional.cross_entropy(
+                logits_last, targets_last,
+                ignore_index=-100,
+                label_smoothing=label_smoothing,
+            )
 
     return loss
 
 
 def calc_loss_loader(data_loader, model, device, num_batches=None,
-                     use_adaptive_softmax=False, label_smoothing=0.0):
+                     use_adaptive_softmax=False, use_bpr=False, label_smoothing=0.0,
+                     bpr_num_negatives=1, pad_token_id=0):
     total_loss = 0.
     if len(data_loader) == 0:
         return float("nan")
@@ -80,7 +122,10 @@ def calc_loss_loader(data_loader, model, device, num_batches=None,
             loss = calc_loss_batch(
                 input_batch, target_batch, model, device,
                 use_adaptive_softmax=use_adaptive_softmax,
+                use_bpr=use_bpr,
                 label_smoothing=label_smoothing,
+                bpr_num_negatives=bpr_num_negatives,
+                pad_token_id=pad_token_id,
             )
             total_loss += loss.item()
         else:
@@ -95,7 +140,10 @@ def validate_model(model: torch.nn.Module,
                    device: torch.device,
                    num_batches: int,
                    use_adaptive_softmax: bool = False,
-                   label_smoothing: float = 0.0) -> Tuple[float, float]:
+                   use_bpr: bool = False,
+                   label_smoothing: float = 0.0,
+                   bpr_num_negatives: int = 1,
+                   pad_token_id: int = 0) -> Tuple[float, float]:
     """Evaluates the model on train and val splits."""
     model.eval()
     with torch.no_grad():
@@ -104,11 +152,15 @@ def validate_model(model: torch.nn.Module,
 
         train_loss = calc_loss_loader(
             train_dataloader, model, device, num_batches=num_batches,
-            use_adaptive_softmax=use_adaptive_softmax, label_smoothing=label_smoothing,
+            use_adaptive_softmax=use_adaptive_softmax, use_bpr=use_bpr,
+            label_smoothing=label_smoothing, bpr_num_negatives=bpr_num_negatives,
+            pad_token_id=pad_token_id,
         )
         val_loss = calc_loss_loader(
             val_dataloader, model, device, num_batches=num_batches,
-            use_adaptive_softmax=use_adaptive_softmax, label_smoothing=label_smoothing,
+            use_adaptive_softmax=use_adaptive_softmax, use_bpr=use_bpr,
+            label_smoothing=label_smoothing, bpr_num_negatives=bpr_num_negatives,
+            pad_token_id=pad_token_id,
         )
     model.train()
     return train_loss, val_loss
@@ -225,10 +277,22 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
     evaluation_frequency=cfg_hyperparam["evaluation_frequency"]
     evaluation_num_batches= None #cfg_hyperparam["evaluation_num_batches"]
     num_accumulation_steps=cfg_hyperparam["num_accumulation_steps"]
-    use_adaptive_softmax=cfg_hyperparam["use_adaptive_softmax"]
     warmup_steps=cfg_hyperparam.get("warmup_steps", 0)
     max_grad_norm=cfg_hyperparam.get("max_grad_norm", 1.0)
     label_smoothing=cfg_hyperparam.get("label_smoothing", 0.1)
+
+    # loss_fn selects the training objective:
+    #   "linear_softmax"   -> cross-entropy over the full vocabulary (default)
+    #   "adaptive_softmax" -> AdaptiveLogSoftmaxWithLoss
+    #   "bpr"              -> Bayesian Personalized Ranking (pairwise, sampled negatives)
+    loss_fn = cfg_hyperparam.get("loss_fn", "linear_softmax")
+    valid_loss_fns = {"linear_softmax", "adaptive_softmax", "bpr"}
+    if loss_fn not in valid_loss_fns:
+        raise ValueError(f"Unsupported loss_fn: {loss_fn!r}. Choose one of {sorted(valid_loss_fns)}")
+
+    use_adaptive_softmax = loss_fn == "adaptive_softmax"
+    use_bpr = loss_fn == "bpr"
+    bpr_num_negatives = cfg_hyperparam.get("bpr_num_negatives", 1)
 
     GROUP = cfg_experiment["group"]
 
@@ -261,11 +325,11 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
 
 
 
-    if cfg_hyperparam["use_adaptive_softmax"]:
+    if use_adaptive_softmax:
         print("Using Adaptive Softmax")
         #model = model_builder.GPTAdaSoftmaxModel(cfg_model, tokenizer=tokenizer).to(device)
     elif cfg_model['use_meta_embeddings']:
-        print("Using Linear Softmax with Meta Embeddings")
+        print(f"Using Linear Softmax with Meta Embeddings (loss_fn={loss_fn})")
         
         meta_emb, tok_to_meta = load_meta_embedding(
             root_dir=cfg_data["meta_embedding_path"],
@@ -293,7 +357,7 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
                         tok_to_meta=tok_to_meta
                     ).to(device)
     else:
-        print("Using Linear Softmax")
+        print(f"Using Linear Softmax (loss_fn={loss_fn})")
         model = LSTMAttentionRec(
                         embedded_dim=cfg_model["emb_dim"],
                         hidden_dim=cfg_model["hidden_dim"],
@@ -346,10 +410,15 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
         config = cfg_model | cfg_hyperparam
         config["train_feature_store"]= cfg_data["train_feature_store"]
     
-        if cfg_hyperparam["use_adaptive_softmax"]:
+        if use_adaptive_softmax:
             config["cutoffs"] = cfg_model["cutoffs"]
             config["div_value"] = cfg_model["div_value"]
             config["loss_fn"] = "AdaptiveSoftmaxLoss"
+        elif use_bpr:
+            config["loss_fn"] = "BPRLoss"
+            config["bpr_num_negatives"] = bpr_num_negatives
+            config["cutoffs"] = None
+            config["div_value"] = None
         else:
             config["loss_fn"] = "CrossEntropyLoss"
             config["cutoffs"] = None
@@ -413,7 +482,10 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
             loss = calc_loss_batch(
                 input_batch, target_batch, model, device,
                 use_adaptive_softmax=use_adaptive_softmax,
+                use_bpr=use_bpr,
                 label_smoothing=label_smoothing,
+                bpr_num_negatives=bpr_num_negatives,
+                pad_token_id=PAD_ID,
             )
 
 
@@ -430,7 +502,10 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
             model, train_dataloader, val_dataloader, device,
             num_batches=evaluation_num_batches,
             use_adaptive_softmax=use_adaptive_softmax,
+            use_bpr=use_bpr,
             label_smoothing=label_smoothing,
+            bpr_num_negatives=bpr_num_negatives,
+            pad_token_id=PAD_ID,
         )
 
         train_losses.append(train_loss)
