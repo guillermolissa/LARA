@@ -9,14 +9,21 @@ import torch.nn.functional as F
 
 class LSTMModel(nn.Module):
 
-  def __init__(self, embedded_dim, hidden_dim, layer_dim, items_size, drop_rate:float=0):
+  def __init__(self, embedded_dim, hidden_dim, layer_dim, items_size, pad_token_id: int = 0, drop_rate:float=0):
     super(LSTMModel, self).__init__()
 
     self.hidden_dim = hidden_dim
     self.layer_dim = layer_dim
 
 
-    self.embedding = nn.Embedding(items_size, embedded_dim)
+    self.embedding = nn.Embedding(items_size, embedded_dim, padding_idx=pad_token_id)
+
+    # Small init: the embedding matrix doubles as the output projection when
+    # ``tie_weights`` is set, so an N(0, 1) default would blow up the logits.
+    # The LSTM input path compensates with a sqrt(emb_dim) scale (see forward).
+    nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
+    with torch.no_grad():
+        self.embedding.weight[pad_token_id].zero_()
 
     self.lstm = nn.LSTM(embedded_dim, hidden_dim, num_layers=layer_dim, dropout=drop_rate, batch_first=True)
     self.fc = nn.Linear(hidden_dim, items_size)

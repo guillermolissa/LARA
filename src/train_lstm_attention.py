@@ -7,7 +7,7 @@ import torch
 import numpy as np
 from tqdm.auto import tqdm
 from typing import Dict, List, Tuple
-from lstm import LSTMAttentionRec, LSTMAttentionMetaEmbModel, load_meta_embedding
+from lstm import LSTMAttentionRec, LSTMAttentionMetaEmbModel, LSTMModel, load_meta_embedding
 from dataset import ItemDataset
 from torch.utils.data import DataLoader , random_split
 from custom_collate import collate_fn
@@ -282,7 +282,7 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
     label_smoothing=cfg_hyperparam.get("label_smoothing", 0.1)
 
     # loss_fn selects the training objective:
-    #   "linear_softmax"   -> cross-entropy over the full vocabulary (default)
+    #   "linear_softmax"   -> cross-entropy 
     #   "adaptive_softmax" -> AdaptiveLogSoftmaxWithLoss
     #   "bpr"              -> Bayesian Personalized Ranking (pairwise, sampled negatives)
     loss_fn = cfg_hyperparam.get("loss_fn", "linear_softmax")
@@ -292,7 +292,7 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
 
     use_adaptive_softmax = loss_fn == "adaptive_softmax"
     use_bpr = loss_fn == "bpr"
-    bpr_num_negatives = cfg_hyperparam.get("bpr_num_negatives", 1)
+    bpr_num_negatives = cfg_hyperparam["bpr_num_negatives"]
 
     GROUP = cfg_experiment["group"]
 
@@ -328,7 +328,7 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
     if use_adaptive_softmax:
         print("Using Adaptive Softmax")
         #model = model_builder.GPTAdaSoftmaxModel(cfg_model, tokenizer=tokenizer).to(device)
-    elif cfg_model['use_meta_embeddings']:
+    elif cfg_model['use_meta_embeddings'] and cfg_model['model_type'] == 'lara':
         print(f"Using Linear Softmax with Meta Embeddings (loss_fn={loss_fn})")
         
         meta_emb, tok_to_meta = load_meta_embedding(
@@ -356,7 +356,7 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
                         meta_emb=meta_emb,
                         tok_to_meta=tok_to_meta
                     ).to(device)
-    else:
+    elif cfg_model['model_type'] == 'lara':
         print(f"Using Linear Softmax (loss_fn={loss_fn})")
         model = LSTMAttentionRec(
                         embedded_dim=cfg_model["emb_dim"],
@@ -371,6 +371,20 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
                         recency_decay=cfg_model.get("recency_decay", 0.9),
                         context_length=cfg_model["context_length"]
                     ).to(device)
+
+    elif cfg_model['model_type'] == 'lstm':
+
+        print(f"Using LSTM Model (loss_fn={loss_fn})")
+        model = LSTMModel(
+                        embedded_dim=cfg_model["emb_dim"],
+                        hidden_dim=cfg_model["hidden_dim"],
+                        layer_dim=cfg_model["n_layers"],
+                        items_size=cfg_model["items_size"],
+                        drop_rate=cfg_model["drop_rate"],
+                        pad_token_id=PAD_ID,
+                        
+                    ).to(device)
+
 
 
         # Set loss and optimizer

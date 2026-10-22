@@ -18,22 +18,23 @@ data:
   train: "data/train" # Directory for training data
   test: "data/test" # Directory for test data
   meta_embedding_path: "data/meta" # Path to pretrained item metadata embeddings
+  item_meta_embedding: "data/processed/item_meta_embeddings.pt"
+  item_meta_id_map: "data/processed/item_id_to_index.json"
   
 
 model:
   context_length: 10      # Context length
   emb_dim: 128            # Embedding dimension
   hidden_dim: 128         # Hidden dimension for LSTM
-  n_heads: 2              # Number of attention heads
+  n_heads: 1              # Number of attention heads
   n_layers: 1             # Number of layers
-  drop_rate: 0.2          # Dropout rate
+  drop_rate: 0.15          # Dropout rate
   qkv_bias: false         # Query-Key-Value bias
-  name: "lara"   # Model name LSTM Attention Recommender Architecture
   folder: "models/dressipi"        # Model folder
-  model_type: "lstm"       # Model type
+  model_type: "lstm"       # Model type options: "lstm" or "lara"
   cutoffs: [100, 1000, 9000] # Cutoffs for Adaptive Softmax (must all be < items_size)
   div_value: 4            # Div value for Adaptive Softmax
-  use_meta_embeddings: true   # Add pretrained item metadata embeddings to token embeddings
+  use_meta_embeddings: false   # Add pretrained item metadata embeddings to token embeddings
   freeze_meta_embeddings: true # Keep metadata embeddings fixed during Transformer training
   tie_weights: true # Tie weights between input and output embeddings
   use_recency_bias : false # Whether to use recency bias in the model. If true, the model will learn a recency bias vector that is added to the output logits. This can help the model to better capture the recency effect in user behavior.
@@ -44,7 +45,7 @@ model:
 hyperparameters:
   batch_size: 128
   learning_rate: 0.0005
-  num_epochs: 40
+  num_epochs: 10
   kfold : 5
   warmup_steps: 100
   weight_decay: 0.20
@@ -56,8 +57,8 @@ hyperparameters:
   validation_ratio: 0.2
   device: "mps" # Options: 'cuda', 'mps' or 'cpu'
   num_workers: 0 # Number of workers for DataLoader
-  loss_fn: "linear_softmax" # Training objective for train_lstm_attention.py. ["linear_softmax" (cross-entropy), "adaptive_softmax", "bpr" (Bayesian Personalized Ranking)]
-  bpr_num_negatives: 1 # Number of negative samples for BPR loss. Only used if oss_fn is "bpr"
+  loss_fn: "bpr" # Training objective for train_lstm_attention.py. ["linear_softmax" (cross-entropy), "adaptive_softmax", "bpr" (Bayesian Personalized Ranking)]
+  bpr_num_negatives: 2048 # Number of negative samples for BPR loss. Only used if oss_fn is "bpr"
   optimizer: "AdamW" # Optimizer type ["SGD", "AdamW"]
   seed: 42
 

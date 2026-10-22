@@ -119,20 +119,33 @@ def build_model_name(cfg_model: dict, cfg_hyperparam: dict) -> str:
     meta_tag = "_meta" if cfg_model.get("use_meta_embeddings", False) else ""
     tie_weights_tag = "_tie" if cfg_model.get("tie_weights", False) else ""
 
-    return (
-        f"{cfg_model['name']}"
-        f"_l{cfg_model['n_layers']}"
-        f"_h{cfg_model['n_heads']}"
-        f"_ctx{cfg_model['context_length']}"
-        f"_emb{cfg_model['emb_dim']}"
-        f"_hid{cfg_model['hidden_dim']}"
-        f"_dr{cfg_model['drop_rate']}"
-        f"_lr{lr_str}"
-        f"{tie_weights_tag}"
-        f"_{loss_tag}"
-        f"{meta_tag}"
-        f".pth"
-    )
+    if cfg_model.get("model_type") == "lara":
+        return (
+            f"{cfg_model['model_type']}"
+            f"_l{cfg_model['n_layers']}"
+            f"_h{cfg_model['n_heads']}"
+            f"_ctx{cfg_model['context_length']}"
+            f"_emb{cfg_model['emb_dim']}"
+            f"_hid{cfg_model['hidden_dim']}"
+            f"_dr{cfg_model['drop_rate']}"
+            f"_lr{lr_str}"
+            f"{tie_weights_tag}"
+            f"_{loss_tag}"
+            f"{meta_tag}"
+            f".pth"
+        )
+    else:
+        return (
+            f"{cfg_model['model_type']}"
+            f"_l{cfg_model['n_layers']}"
+            f"_ctx{cfg_model['context_length']}"
+            f"_emb{cfg_model['emb_dim']}"
+            f"_hid{cfg_model['hidden_dim']}"
+            f"_dr{cfg_model['drop_rate']}"
+            f"_lr{lr_str}"
+            f"_{loss_tag}"
+            f".pth"
+        )
 
 
 def set_seed(seed: int = 42) -> None:

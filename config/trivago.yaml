@@ -30,8 +30,7 @@ model:
   n_layers: 1             # Number of layers
   drop_rate: 0.23          # Dropout rate
   qkv_bias: false         # Query-Key-Value bias
-  name: "lara"   # Model name LSTM Attention Recommender Architecture
-  folder: "models"        # Model folder
+  model_type: "lstm"       # Model type options: "lstm" or "lara"
   model_type: "lstm"       # Model type
   cutoffs: [100, 1000, 9000] # Cutoffs for Adaptive Softmax (must all be < items_size)
   div_value: 4            # Div value for Adaptive Softmax
