@@ -52,7 +52,7 @@ class LSTMModel(nn.Module):
 
 
     out, (hn, cn) = self.lstm(embedded, (h0, c0))
-    output = self.fc(hn.squeeze(0))
+    output = self.fc(hn[-1])  # last layer's final hidden state, (batch, hidden) regardless of num_layers
     return output, hn, cn
 
 
