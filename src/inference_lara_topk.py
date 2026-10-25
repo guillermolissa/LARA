@@ -6,7 +6,7 @@ import torch.multiprocessing as mp
 from custom_collate import collate_fn
 from utils import set_seed, load_config, load_model, build_model_name
 from functools import partial
-from lstm import LSTMAttentionRec, LSTMAttentionMetaEmbModel, load_meta_embedding   # Adjust the import based on the actual location of LSTMModel
+from lstm import LSTMAttentionRec, LSTMAttentionMetaEmbModel, LSTMModel, load_meta_embedding   # Adjust the import based on the actual location of LSTMModel
 from pathlib import Path
 from tokenizer import get_tokenizer
 from tokenizers import Tokenizer
@@ -77,13 +77,25 @@ def inference_topk(top_n: int, cfg: dict):
     cfg_model["item_meta_embedding"] = cfg_data["item_meta_embedding"]
     cfg_model["item_meta_id_map"] = cfg_data["item_meta_id_map"]
 
-    use_adaptive_softmax = cfg_hyperparam["use_adaptive_softmax"]
+     # loss_fn selects the training objective:
+    #   "linear_softmax"   -> cross-entropy 
+    #   "adaptive_softmax" -> AdaptiveLogSoftmaxWithLoss
+    #   "bpr"              -> Bayesian Personalized Ranking (pairwise, sampled negatives)
+    loss_fn = cfg_hyperparam.get("loss_fn", "linear_softmax")
+    valid_loss_fns = {"linear_softmax", "adaptive_softmax", "bpr"}
+    if loss_fn not in valid_loss_fns:
+        raise ValueError(f"Unsupported loss_fn: {loss_fn!r}. Choose one of {sorted(valid_loss_fns)}")
+
+    use_adaptive_softmax = loss_fn == "adaptive_softmax"
+    use_bpr = loss_fn == "bpr"
+    bpr_num_negatives = cfg_hyperparam["bpr_num_negatives"]
+    
     print("Loading model")
     if use_adaptive_softmax:
-        print("Using Adaptive Softmax")
+        print("Using LARA with Adaptive Softmax")
         #model = model_builder.GPTAdaSoftmaxModel(cfg_model, tokenizer=tokenizer).to(device)
-    elif cfg_model['use_meta_embeddings']:
-        print("Using Meta Embeddings")
+    elif cfg_model['use_meta_embeddings'] and cfg_model['model_type'] == 'lara':
+        print(f"Using LARA with Meta Embeddings (loss_fn={loss_fn})")
         meta_emb, tok_to_meta = load_meta_embedding(
                     root_dir=cfg_data["meta_embedding_path"],
                     emb_dim=cfg_model["emb_dim"],
@@ -107,8 +119,8 @@ def inference_topk(top_n: int, cfg: dict):
                         tok_to_meta=tok_to_meta
                     ).to(device)
 
-    else:
-        print("Using Linear Softmax")
+    elif cfg_model['model_type'] == 'lara':
+        print(f"Using LARA (loss_fn={loss_fn})")
         model = LSTMAttentionRec(
                             embedded_dim=cfg_model["emb_dim"],
                             hidden_dim=cfg_model["hidden_dim"],
@@ -122,6 +134,19 @@ def inference_topk(top_n: int, cfg: dict):
                             recency_decay=cfg_model.get("recency_decay", 0.9),
                             context_length=cfg_model["context_length"]
                         ).to(device)
+    elif cfg_model['model_type'] == 'lstm':
+    
+        print(f"Using LSTM Model (loss_fn={loss_fn})")
+        model = LSTMModel(
+                        embedded_dim=cfg_model["emb_dim"],
+                        hidden_dim=cfg_model["hidden_dim"],
+                        layer_dim=cfg_model["n_layers"],
+                        items_size=cfg_model["items_size"],
+                        drop_rate=cfg_model["drop_rate"],
+                        pad_token_id=PAD_ID,
+                        
+                    ).to(device)
+    
 
     load_model(model, target_dir=cfg_model["folder"], model_name=build_model_name(cfg_model, cfg_hyperparam), device=device, weights_only=True)
     model.eval()
