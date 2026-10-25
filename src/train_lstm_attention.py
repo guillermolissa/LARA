@@ -382,7 +382,7 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
                         items_size=cfg_model["items_size"],
                         drop_rate=cfg_model["drop_rate"],
                         pad_token_id=PAD_ID,
-                        
+
                     ).to(device)
 
 
@@ -582,7 +582,7 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
     if track_experiment: 
         run.finish()
 
-    print(f"done. best val NDCG@{args.eval_k}={best_ndcg:.4f}  weights → {checkpoint_path}")
+    print(f"done. best val NDCG@{eval_k}={best_ndcg:.4f}  weights → {checkpoint_path}")
     # Save the model with help from utils.py
     save_model(model=model,
                     target_dir=cfg_model["folder"],
