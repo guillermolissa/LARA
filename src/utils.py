@@ -115,7 +115,12 @@ def build_model_name(cfg_model: dict, cfg_hyperparam: dict) -> str:
     lr = cfg_hyperparam["learning_rate"]
     lr_str = f"{lr:.0e}".replace("e-0", "e-").replace("e+0", "e")
     loss_fn = cfg_hyperparam.get("loss_fn")
-    loss_tag = {"adaptive_softmax": "adas", "bpr": "bpr"}.get(loss_fn, "ce")
+    loss_tag = {
+        "adaptive_softmax": "adas",
+        "bpr": "bpr",
+        "bpr_max": "bprmax",
+        "top1_max": "top1max",
+    }.get(loss_fn, "ce")
     meta_tag = "_meta" if cfg_model.get("use_meta_embeddings", False) else ""
     tie_weights_tag = "_tie" if cfg_model.get("tie_weights", False) else ""
 

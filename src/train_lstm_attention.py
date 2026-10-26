@@ -48,7 +48,7 @@ def load_data(file_path: str,  tokenizer: Tokenizer, validation_ratio: float=0.1
 def bpr_loss(logits: torch.Tensor, target_batch: torch.Tensor,
              num_negatives: int = 1, pad_token_id: int = 0) -> torch.Tensor:
     """Bayesian Personalized Ranking loss.
-    
+
     ref: https://medium.com/@mandeep0405/different-loss-methods-for-the-recommender-systems-e6a75de414a6
 
     Samples `num_negatives` items at random per example and pushes the
@@ -78,37 +78,114 @@ def bpr_loss(logits: torch.Tensor, target_batch: torch.Tensor,
     return -torch.nn.functional.logsigmoid(pos_scores - neg_scores).mean()
 
 
+def inbatch_scores(logits: torch.Tensor, target_batch: torch.Tensor, pad_token_id: int = 0):
+    """Builds the in-batch score matrix GRU4Rec's BPR-max/TOP1-max losses are built on.
+
+    Returns:
+        pos_scores: (N,) each row's own-target score.
+        scores:     (N, N) scores[i, j] = score row i assigns to row j's target item.
+        neg_mask:   (N, N) bool, True where column j is a usable negative for row i
+                    (excludes the row itself, padding targets, and ties where
+                    target[j] == target[i]).
+    """
+    valid_mask = target_batch != -100
+    logits = logits[valid_mask]
+    target_batch = target_batch[valid_mask]
+
+    n = logits.size(0)
+    scores = logits[:, target_batch]           # (N, N)
+    pos_scores = scores.diagonal()             # (N,)
+
+    same_item = target_batch.unsqueeze(0) == target_batch.unsqueeze(1)  # ties, incl. diagonal
+    is_pad = (target_batch == pad_token_id).unsqueeze(0).expand(n, n)
+    neg_mask = ~same_item & ~is_pad
+
+    return pos_scores, scores, neg_mask
+
+
+def bpr_max_loss(logits: torch.Tensor, target_batch: torch.Tensor,
+                  pad_token_id: int = 0, reg: float = 1.0) -> torch.Tensor:
+    """
+        BPR-max loss with in-batch negative sampling (Hidasi & Karatzoglou, 2018).
+    """
+    pos_scores, scores, neg_mask = inbatch_scores(logits, target_batch, pad_token_id)
+    row_has_neg = neg_mask.any(dim=1)
+    if row_has_neg.sum() == 0:
+        return logits.sum() * 0.0
+
+    pos_scores = pos_scores[row_has_neg]
+    scores = scores[row_has_neg]
+    neg_mask = neg_mask[row_has_neg]
+
+    neg_softmax = torch.softmax(scores.masked_fill(~neg_mask, float("-inf")), dim=1)
+
+    prob = (neg_softmax * torch.sigmoid(pos_scores.unsqueeze(1) - scores)).sum(dim=1)
+    bpr_term = -torch.log(prob.clamp_min(1e-12))
+    reg_term = reg * (neg_softmax * scores.pow(2)).sum(dim=1)
+
+    return (bpr_term + reg_term).mean()
+
+
+def top1_max_loss(logits: torch.Tensor, target_batch: torch.Tensor,
+                   pad_token_id: int = 0) -> torch.Tensor:
+    """TOP1-max loss with in-batch negative sampling (Hidasi & Karatzoglou, 2018).
+
+    Same softmax-over-negatives weighting as BPR-max, applied to the TOP1
+    objective (push negative scores below the positive score, and regularize
+    negative scores towards zero).
+    """
+    pos_scores, scores, neg_mask = inbatch_scores(logits, target_batch, pad_token_id)
+    row_has_neg = neg_mask.any(dim=1)
+    if row_has_neg.sum() == 0:
+        return logits.sum() * 0.0
+
+    pos_scores = pos_scores[row_has_neg]
+    scores = scores[row_has_neg]
+    neg_mask = neg_mask[row_has_neg]
+
+    neg_softmax = torch.softmax(scores.masked_fill(~neg_mask, float("-inf")), dim=1)
+
+    per_neg = torch.sigmoid(scores - pos_scores.unsqueeze(1)) + torch.sigmoid(scores.pow(2))
+    return (neg_softmax * per_neg).sum(dim=1).mean()
+
+
 def calc_loss_batch(input_batch, target_batch, model, device,
-                    use_adaptive_softmax=False, use_bpr=False, label_smoothing=0.0,
-                    bpr_num_negatives=1, pad_token_id=0):
+                    loss_fn="linear_softmax", label_smoothing=0.0,
+                    bpr_num_negatives=1, bpr_max_reg=1.0, pad_token_id=0):
     input_batch, target_batch = input_batch.to(device), target_batch.to(device)
 
-    if use_adaptive_softmax:
+    if loss_fn == "adaptive_softmax":
         _, loss = model(input_batch, target_batch)
+        return loss
+
+    logits, _, _ = model(input_batch)
+    # Only the last position is used at inference — train against the same target
+    logits_last  = logits#[:, -1, :]       # (B, vocab_size)
+    targets_last = target_batch#[:, -1]     # (B,)
+
+    if loss_fn == "bpr":
+        loss = bpr_loss(
+            logits_last, targets_last,
+            num_negatives=bpr_num_negatives,
+            pad_token_id=pad_token_id,
+        )
+    elif loss_fn == "bpr_max":
+        loss = bpr_max_loss(logits_last, targets_last, pad_token_id=pad_token_id, reg=bpr_max_reg)
+    elif loss_fn == "top1_max":
+        loss = top1_max_loss(logits_last, targets_last, pad_token_id=pad_token_id)
     else:
-        logits, _, _ = model(input_batch)
-        # Only the last position is used at inference — train against the same target
-        logits_last  = logits#[:, -1, :]       # (B, vocab_size)
-        targets_last = target_batch#[:, -1]     # (B,)
-        if use_bpr:
-            loss = bpr_loss(
-                logits_last, targets_last,
-                num_negatives=bpr_num_negatives,
-                pad_token_id=pad_token_id,
-            )
-        else:
-            loss = torch.nn.functional.cross_entropy(
-                logits_last, targets_last,
-                ignore_index=-100,
-                label_smoothing=label_smoothing,
-            )
+        loss = torch.nn.functional.cross_entropy(
+            logits_last, targets_last,
+            ignore_index=-100,
+            label_smoothing=label_smoothing,
+        )
 
     return loss
 
 
 def calc_loss_loader(data_loader, model, device, num_batches=None,
-                     use_adaptive_softmax=False, use_bpr=False, label_smoothing=0.0,
-                     bpr_num_negatives=1, pad_token_id=0):
+                     loss_fn="linear_softmax", label_smoothing=0.0,
+                     bpr_num_negatives=1, bpr_max_reg=1.0, pad_token_id=0):
     total_loss = 0.
     if len(data_loader) == 0:
         return float("nan")
@@ -121,10 +198,10 @@ def calc_loss_loader(data_loader, model, device, num_batches=None,
         if i < num_batches:
             loss = calc_loss_batch(
                 input_batch, target_batch, model, device,
-                use_adaptive_softmax=use_adaptive_softmax,
-                use_bpr=use_bpr,
+                loss_fn=loss_fn,
                 label_smoothing=label_smoothing,
                 bpr_num_negatives=bpr_num_negatives,
+                bpr_max_reg=bpr_max_reg,
                 pad_token_id=pad_token_id,
             )
             total_loss += loss.item()
@@ -139,10 +216,10 @@ def validate_model(model: torch.nn.Module,
                    val_dataloader: torch.utils.data.DataLoader,
                    device: torch.device,
                    num_batches: int,
-                   use_adaptive_softmax: bool = False,
-                   use_bpr: bool = False,
+                   loss_fn: str = "linear_softmax",
                    label_smoothing: float = 0.0,
                    bpr_num_negatives: int = 1,
+                   bpr_max_reg: float = 1.0,
                    pad_token_id: int = 0) -> Tuple[float, float]:
     """Evaluates the model on train and val splits."""
     model.eval()
@@ -152,14 +229,14 @@ def validate_model(model: torch.nn.Module,
 
         train_loss = calc_loss_loader(
             train_dataloader, model, device, num_batches=num_batches,
-            use_adaptive_softmax=use_adaptive_softmax, use_bpr=use_bpr,
-            label_smoothing=label_smoothing, bpr_num_negatives=bpr_num_negatives,
+            loss_fn=loss_fn, label_smoothing=label_smoothing,
+            bpr_num_negatives=bpr_num_negatives, bpr_max_reg=bpr_max_reg,
             pad_token_id=pad_token_id,
         )
         val_loss = calc_loss_loader(
             val_dataloader, model, device, num_batches=num_batches,
-            use_adaptive_softmax=use_adaptive_softmax, use_bpr=use_bpr,
-            label_smoothing=label_smoothing, bpr_num_negatives=bpr_num_negatives,
+            loss_fn=loss_fn, label_smoothing=label_smoothing,
+            bpr_num_negatives=bpr_num_negatives, bpr_max_reg=bpr_max_reg,
             pad_token_id=pad_token_id,
         )
     model.train()
@@ -282,17 +359,19 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
     label_smoothing=cfg_hyperparam.get("label_smoothing", 0.1)
 
     # loss_fn selects the training objective:
-    #   "linear_softmax"   -> cross-entropy 
+    #   "linear_softmax"   -> cross-entropy
     #   "adaptive_softmax" -> AdaptiveLogSoftmaxWithLoss
-    #   "bpr"              -> Bayesian Personalized Ranking (pairwise, sampled negatives)
+    #   "bpr"              -> Bayesian Personalized Ranking, uniform random negatives
+    #   "bpr_max"          -> BPR-max, in-batch negatives (GRU4Rec, Hidasi & Karatzoglou 2018)
+    #   "top1_max"         -> TOP1-max, in-batch negatives (GRU4Rec, Hidasi & Karatzoglou 2018)
     loss_fn = cfg_hyperparam.get("loss_fn", "linear_softmax")
-    valid_loss_fns = {"linear_softmax", "adaptive_softmax", "bpr"}
+    valid_loss_fns = {"linear_softmax", "adaptive_softmax", "bpr", "bpr_max", "top1_max"}
     if loss_fn not in valid_loss_fns:
         raise ValueError(f"Unsupported loss_fn: {loss_fn!r}. Choose one of {sorted(valid_loss_fns)}")
 
     use_adaptive_softmax = loss_fn == "adaptive_softmax"
-    use_bpr = loss_fn == "bpr"
-    bpr_num_negatives = cfg_hyperparam["bpr_num_negatives"]
+    bpr_num_negatives = cfg_hyperparam.get("bpr_num_negatives", 1)
+    bpr_max_reg = cfg_hyperparam.get("bpr_max_reg", 1.0)
 
     GROUP = cfg_experiment["group"]
 
@@ -424,19 +503,22 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
         config = cfg_model | cfg_hyperparam
         config["train_feature_store"]= cfg_data["train_feature_store"]
     
+        config["cutoffs"] = None
+        config["div_value"] = None
         if use_adaptive_softmax:
             config["cutoffs"] = cfg_model["cutoffs"]
             config["div_value"] = cfg_model["div_value"]
             config["loss_fn"] = "AdaptiveSoftmaxLoss"
-        elif use_bpr:
+        elif loss_fn == "bpr":
             config["loss_fn"] = "BPRLoss"
             config["bpr_num_negatives"] = bpr_num_negatives
-            config["cutoffs"] = None
-            config["div_value"] = None
+        elif loss_fn == "bpr_max":
+            config["loss_fn"] = "BPRMaxLoss"
+            config["bpr_max_reg"] = bpr_max_reg
+        elif loss_fn == "top1_max":
+            config["loss_fn"] = "TOP1MaxLoss"
         else:
             config["loss_fn"] = "CrossEntropyLoss"
-            config["cutoffs"] = None
-            config["div_value"] = None
     
         config["model_name"] = model_filename 
 
@@ -495,10 +577,10 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
 
             loss = calc_loss_batch(
                 input_batch, target_batch, model, device,
-                use_adaptive_softmax=use_adaptive_softmax,
-                use_bpr=use_bpr,
+                loss_fn=loss_fn,
                 label_smoothing=label_smoothing,
                 bpr_num_negatives=bpr_num_negatives,
+                bpr_max_reg=bpr_max_reg,
                 pad_token_id=PAD_ID,
             )
 
@@ -515,10 +597,10 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
         train_loss, val_loss = validate_model(
             model, train_dataloader, val_dataloader, device,
             num_batches=evaluation_num_batches,
-            use_adaptive_softmax=use_adaptive_softmax,
-            use_bpr=use_bpr,
+            loss_fn=loss_fn,
             label_smoothing=label_smoothing,
             bpr_num_negatives=bpr_num_negatives,
+            bpr_max_reg=bpr_max_reg,
             pad_token_id=PAD_ID,
         )
 
