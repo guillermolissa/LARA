@@ -82,7 +82,7 @@ def inference_topk(top_n: int, cfg: dict):
     #   "adaptive_softmax" -> AdaptiveLogSoftmaxWithLoss
     #   "bpr"              -> Bayesian Personalized Ranking (pairwise, sampled negatives)
     loss_fn = cfg_hyperparam.get("loss_fn", "linear_softmax")
-    valid_loss_fns = {"linear_softmax", "adaptive_softmax", "bpr"}
+    valid_loss_fns = {"linear_softmax", "adaptive_softmax", "bpr", "bpr_max", "top1_max"}
     if loss_fn not in valid_loss_fns:
         raise ValueError(f"Unsupported loss_fn: {loss_fn!r}. Choose one of {sorted(valid_loss_fns)}")
 

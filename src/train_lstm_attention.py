@@ -408,7 +408,7 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
         print("Using Adaptive Softmax")
         #model = model_builder.GPTAdaSoftmaxModel(cfg_model, tokenizer=tokenizer).to(device)
     elif cfg_model['use_meta_embeddings'] and cfg_model['model_type'] == 'lara':
-        print(f"Using Linear Softmax with Meta Embeddings (loss_fn={loss_fn})")
+        print(f"Using LARA with Meta Embeddings (loss_fn={loss_fn})")
         
         meta_emb, tok_to_meta = load_meta_embedding(
             root_dir=cfg_data["meta_embedding_path"],
@@ -436,7 +436,7 @@ def train_model(cfg: dict, track_experiment: bool, eval_k: int, verbose: bool):
                         tok_to_meta=tok_to_meta
                     ).to(device)
     elif cfg_model['model_type'] == 'lara':
-        print(f"Using Linear Softmax (loss_fn={loss_fn})")
+        print(f"Using LARA (loss_fn={loss_fn})")
         model = LSTMAttentionRec(
                         embedded_dim=cfg_model["emb_dim"],
                         hidden_dim=cfg_model["hidden_dim"],
